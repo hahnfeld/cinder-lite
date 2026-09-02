@@ -65,6 +65,9 @@ private val SANDBOX_BRIEF = listOf(
     "Files you create in /workspace can be opened by the user from the app, so mention their paths."
 ).joinToString(" ")
 
+/** Why a turn started on its own. Each has its own wording in the transcript. */
+enum class WakeKind { BackgroundTask, Scheduled, Notification }
+
 sealed interface Event {
     /** Assistant prose — rendered under a ⏺ marker. */
     data class Message(val text: String) : Event
@@ -82,6 +85,15 @@ sealed interface Event {
     data class Init(
         val model: String?, val cwd: String?, val tools: List<String>, val sessionId: String?
     ) : Event
+    /**
+     * The session produced a turn nobody typed: a background task (Monitor, Agent, background
+     * Bash) reported back, or a scheduled task fired. Without this the wake-up turn arrives with
+     * no explanation at all, or — if the engine had to be restarted for it — reads as a brand-new
+     * session. [detail] is the CLI's own render text for the wake.
+     */
+    data class Wake(val kind: WakeKind, val detail: String, val failed: Boolean = false) : Event
+    /** The CLI dropped older context to stay inside the window. Silent until now. */
+    data class Compacted(val trigger: String, val preTokens: Int, val postTokens: Int) : Event
     /** Anything the bridge itself needs to say — startup, crashes. */
     data class Notice(val text: String, val isError: Boolean = false) : Event
     /** A stderr line from the engine — shown for visibility, but never ends the turn. */
@@ -223,18 +235,68 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
                 }
             }
 
-            "system" -> if (json.optString("subtype") == "init") {
-                val tools = json.optJSONArray("tools")?.let { arr ->
-                    (0 until arr.length()).map { arr.optString(it) }
-                } ?: emptyList()
-                onEvent(
-                    Event.Init(
-                        json.optString("model", null),
-                        json.optString("cwd", null),
-                        tools,
-                        json.optString("session_id", null)
+            // Only "init" used to be read here; every other system frame was dropped, which is
+            // why a turn started by a monitor, a watcher or a scheduled wake-up arrived with no
+            // explanation — and, when the engine had been restarted for it, looked like a new
+            // session. The subtypes below are the CLI's own stream-json system messages.
+            "system" -> when (json.optString("subtype")) {
+                "init" -> {
+                    val tools = json.optJSONArray("tools")?.let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }
+                    } ?: emptyList()
+                    onEvent(
+                        Event.Init(
+                            json.optString("model", null),
+                            json.optString("cwd", null),
+                            tools,
+                            json.optString("session_id", null)
+                        )
                     )
-                )
+                }
+
+                // A background task finished and handed its result back to the model. status is
+                // completed | failed | stopped.
+                "task_notification" -> {
+                    val status = json.optString("status", "completed")
+                    val summary = json.optString("summary").ifBlank {
+                        json.optString("task_id").take(8).ifBlank { "background task" }
+                    }
+                    onEvent(
+                        Event.Wake(
+                            WakeKind.BackgroundTask,
+                            "$status · $summary",
+                            failed = status == "failed"
+                        )
+                    )
+                }
+
+                // A cron/scheduled task fired. `content` is the CLI's own render text.
+                "scheduled_task_fire" ->
+                    onEvent(Event.Wake(WakeKind.Scheduled, json.optString("content").trim()))
+
+                // The loop's own notification queue — the phone equivalent of the REPL's toasts.
+                "notification" -> {
+                    val text = json.optString("text").trim()
+                    if (text.isNotEmpty()) {
+                        onEvent(
+                            Event.Wake(
+                                WakeKind.Notification, text,
+                                failed = json.optString("priority") == "immediate"
+                            )
+                        )
+                    }
+                }
+
+                "compact_boundary" -> {
+                    val meta = json.optJSONObject("compact_metadata")
+                    onEvent(
+                        Event.Compacted(
+                            meta?.optString("trigger", "auto") ?: "auto",
+                            meta?.optInt("pre_tokens", 0) ?: 0,
+                            meta?.optInt("post_tokens", 0) ?: 0
+                        )
+                    )
+                }
             }
 
             "assistant" -> {

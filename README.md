@@ -49,6 +49,8 @@ libraries), each credited with its license below.
 - **Live file status per operation** — a row says what it actually did: `creating file · 84 lines
   written` → `file created · 212 lines`, or `file edited · +12 −3 lines`, `appended`, `file deleted`
 - **Thinking markers** when the model reasons
+- **Wake-up markers** — a turn started by a background monitor, a finished task or a scheduled
+  fire says so (`woken by a background task · completed · …`) instead of reading as a new session
 - **Sign in** with an Anthropic account via `/login` in chat — the CLI's own OAuth over a real PTY
 - **Session history** in a side drawer — resumes with `--resume`, reloading real context
 - **Live model picker** — queries `/v1/models` with the stored OAuth credential

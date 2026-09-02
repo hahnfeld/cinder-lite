@@ -542,7 +542,16 @@ class Session(app: Application) : AndroidViewModel(app) {
                 status = event.model ?: "ready"
                 event.sessionId?.takeIf { it.isNotBlank() }?.let { currentId = it }
                 android.util.Log.i("ccbusy", "Init session=${event.sessionId} busy=$busy awaitingFresh=$awaitingFreshTurn")
-                transcript.add(Turn.Notice("session started · ${event.tools.size} tools"))
+                // An init frame is not always a new conversation. The engine gets reaped by
+                // Android's low-memory killer and restarted mid-chat with --resume, and that
+                // restart is exactly what a monitor or scheduled wake-up triggers — so calling
+                // every init "session started" made a wake-up read as a fresh session.
+                transcript.add(
+                    Turn.Notice(
+                        if (engine.resumeId != null) "session reconnected · context reloaded"
+                        else "session started · ${event.tools.size} tools"
+                    )
+                )
             }
 
             is Event.Message -> {
@@ -656,6 +665,36 @@ class Session(app: Application) : AndroidViewModel(app) {
                 val cost = event.costUsd?.let { "$%.4f".format(it) }
                 val secs = event.durationMs?.let { "%.1fs".format(it / 1000.0) }
                 transcript.add(Turn.Done(listOfNotNull(event.subtype, secs, cost).joinToString(" · ")))
+            }
+
+            is Event.Wake -> {
+                // A task hand-back or a scheduled fire drives a real turn that nobody typed, so
+                // nothing has marked the session busy yet — do it here, or the stop button stays
+                // down for the whole turn. A plain notification carries no turn, so it must NOT
+                // set busy: there'd be no Done to clear it and the button would stick on.
+                if (event.kind != WakeKind.Notification) {
+                    if (!busy) busy = true
+                    awaitingFreshTurn = false
+                    status = "working"
+                }
+                val label = when (event.kind) {
+                    WakeKind.BackgroundTask -> "↻ woken by a background task · ${event.detail}"
+                    WakeKind.Scheduled -> "⏱ woken by a scheduled task" +
+                        event.detail.lines().firstOrNull()?.trim()
+                            ?.takeIf { it.isNotEmpty() }?.let { " · ${it.take(120)}" }.orEmpty()
+                    WakeKind.Notification -> "🔔 ${event.detail.take(160)}"
+                }
+                transcript.add(Turn.Notice(label, isError = event.failed))
+            }
+
+            is Event.Compacted -> {
+                val post = event.postTokens.takeIf { it > 0 }
+                transcript.add(
+                    Turn.Notice(
+                        "context compacted (${event.trigger})" +
+                            if (post != null) " · ${event.preTokens} → $post tokens" else ""
+                    )
+                )
             }
 
             is Event.Notice -> {
