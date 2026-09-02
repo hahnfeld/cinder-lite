@@ -1,4 +1,4 @@
-﻿build/
+build/
 .gradle/
 .idea/
 .kotlin/
@@ -6,4 +6,3 @@
 local.properties
 *.iml
 .DS_Store
-Cinder-v*.apk
