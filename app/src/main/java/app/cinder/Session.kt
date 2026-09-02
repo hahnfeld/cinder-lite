@@ -103,6 +103,18 @@ class Session(app: Application) : AndroidViewModel(app) {
     var previewFile by mutableStateOf<File?>(null)
         private set
 
+    /**
+     * The reason text from the last ScheduleWakeup call, held until the wake-up it armed actually
+     * lands. The tool schedules a session cron whose fire path re-submits the stored prompt as a
+     * new turn, which makes the CLI emit a fresh init frame — indistinguishable from a new
+     * conversation unless we remember that a wake-up was armed.
+     */
+    private var wakeArmed: String? = null
+    /** True once this conversation has seen an init frame, so a later one can't be a new session. */
+    private var initSeen = false
+    /** Set when a wake event already explained the turn, so the init behind it stays quiet. */
+    private var wakeExplained = false
+
     /** Declared before init{} on purpose — loadHistory() writes to it during construction. */
     var history by mutableStateOf(listOf<SessionRecord>())
         private set
@@ -307,6 +319,10 @@ class Session(app: Application) : AndroidViewModel(app) {
             return
         }
         busy = true
+        // A turn the user typed is not a wake-up, so any armed reason stops applying — otherwise
+        // an engine restart on this message would be labelled as the loop firing. The model
+        // re-arms with its next ScheduleWakeup call.
+        wakeArmed = null
         awaitingFreshTurn = false   // startOrResumeEngine sets this true only when it resumes
         responding = false          // no output yet this turn
         responseTokens = 0
@@ -438,6 +454,9 @@ class Session(app: Application) : AndroidViewModel(app) {
         transcript.clear()
         busy = false
         status = "idle"
+        initSeen = false
+        wakeArmed = null
+        wakeExplained = false
     }
 
     /** Reopens a stored conversation: the transcript is redrawn and the CLI resumes that id. */
@@ -456,6 +475,9 @@ class Session(app: Application) : AndroidViewModel(app) {
         }
         currentId = record.id
         engine.resumeId = record.id
+        initSeen = false
+        wakeArmed = null
+        wakeExplained = false
         if (record.model.isNotBlank()) { model = record.model; engine.model = record.model }
         busy = false
         status = "resumed"
@@ -542,16 +564,23 @@ class Session(app: Application) : AndroidViewModel(app) {
                 status = event.model ?: "ready"
                 event.sessionId?.takeIf { it.isNotBlank() }?.let { currentId = it }
                 android.util.Log.i("ccbusy", "Init session=${event.sessionId} busy=$busy awaitingFresh=$awaitingFreshTurn")
-                // An init frame is not always a new conversation. The engine gets reaped by
-                // Android's low-memory killer and restarted mid-chat with --resume, and that
-                // restart is exactly what a monitor or scheduled wake-up triggers — so calling
-                // every init "session started" made a wake-up read as a fresh session.
-                transcript.add(
-                    Turn.Notice(
-                        if (engine.resumeId != null) "session reconnected · context reloaded"
-                        else "session started · ${event.tools.size} tools"
-                    )
-                )
+                // An init frame is not always a new conversation, which is why everything used
+                // to read as "session started". Three other things produce one: the low-memory
+                // killer reaping the engine and it restarting with --resume, a wake event that
+                // has already announced itself, and a ScheduleWakeup cron re-submitting its
+                // prompt as a fresh turn.
+                val notice = when {
+                    // A wake event just printed its own line; a second one would only repeat it.
+                    wakeExplained -> null
+                    wakeArmed != null -> "⏱ loop wakeup · ${wakeArmed}"
+                    initSeen -> "↻ session woke up · new turn"
+                    engine.resumeId != null -> "session reconnected · context reloaded"
+                    else -> "session started · ${event.tools.size} tools"
+                }
+                wakeExplained = false
+                wakeArmed = null
+                initSeen = true
+                notice?.let { transcript.add(Turn.Notice(it)) }
             }
 
             is Event.Message -> {
@@ -621,6 +650,13 @@ class Session(app: Application) : AndroidViewModel(app) {
                 // An edit is deliberately not watched: the file's total length says nothing about
                 // a three-line change, and reporting it as "lines written" is exactly what made
                 // every edit read as a creation.
+                // Remember a wake-up the model arms for itself, so the turn it later triggers is
+                // named rather than mistaken for a new session. stop:true cancels the loop, so it
+                // disarms instead.
+                if (event.name == "ScheduleWakeup") {
+                    wakeArmed = if (event.input.optBoolean("stop", false)) null
+                    else event.input.optString("reason").ifBlank { "self-paced loop" }
+                }
                 android.util.Log.i("claudecode", "tool ${event.name} [$op] -> ${path.ifBlank { "(no file)" }}")
                 if (path.isNotBlank() && op in setOf(FileOp.Read, FileOp.Create, FileOp.Append)) {
                     watchFile(event.id, path)
@@ -679,12 +715,18 @@ class Session(app: Application) : AndroidViewModel(app) {
                 }
                 val label = when (event.kind) {
                     WakeKind.BackgroundTask -> "↻ woken by a background task · ${event.detail}"
-                    WakeKind.Scheduled -> "⏱ woken by a scheduled task" +
-                        event.detail.lines().firstOrNull()?.trim()
-                            ?.takeIf { it.isNotEmpty() }?.let { " · ${it.take(120)}" }.orEmpty()
+                    // A fire covers both a CronCreate schedule and a ScheduleWakeup loop; only
+                    // the latter has a reason the model wrote, so name it when we have one.
+                    WakeKind.Scheduled -> wakeArmed?.let { "⏱ loop wakeup · $it" }
+                        ?: ("⏱ woken by a scheduled task" +
+                            event.detail.lines().firstOrNull()?.trim()
+                                ?.takeIf { it.isNotEmpty() }?.let { " · ${it.take(120)}" }.orEmpty())
                     WakeKind.Notification -> "🔔 ${event.detail.take(160)}"
                 }
                 transcript.add(Turn.Notice(label, isError = event.failed))
+                // The re-submitted prompt behind a wake arrives as its own init frame; this line
+                // has already said what happened, so that init stays silent.
+                if (event.kind != WakeKind.Notification) wakeExplained = true
             }
 
             is Event.Compacted -> {
@@ -833,6 +875,9 @@ class Session(app: Application) : AndroidViewModel(app) {
         "Bash" -> input.optString("command").lines().first().take(80)
         "Glob", "Grep" -> input.optString("pattern")
         "Task" -> input.optString("description")
+        "ScheduleWakeup" -> if (input.optBoolean("stop", false)) "end loop"
+            else "in ${input.optInt("delaySeconds")}s · ${input.optString("reason")}".trim(' ', '·')
+        "CronCreate" -> input.optString("schedule").ifBlank { input.optString("name") }
         else -> input.keys().asSequence().firstOrNull()?.let { input.optString(it).take(60) } ?: ""
     }
 
