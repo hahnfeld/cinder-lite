@@ -48,7 +48,23 @@ libraries), each credited with its license below.
 - **Code canvas** — fenced code blocks render as scrollable panels with a copy button
 - **Live file status per operation** — a row says what it actually did: `creating file · 84 lines
   written` → `file created · 212 lines`, or `file edited · +12 −3 lines`, `appended`, `file deleted`
-- **Thinking markers** when the model reasons
+- **Live thinking markers** — a ticking clock, the effort level the turn is running at, and an
+  approximate reasoning-token count, so a long turn never reads as a hang
+- **Markdown and LaTeX rendering** — headings, lists, tables, quotes, links and inline code, with
+  maths in `$…$` / `$$…$$` / `\(…\)` form drawn as styled text (no WebView, no KaTeX)
+- **Permission prompts on the phone** — in any mode that asks, the tool call parks with its actual
+  command or path shown and an allow/deny card above the composer; all six CLI permission modes
+  (`plan`, `manual`, `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`) are selectable
+- **Real context-window readout** — the window is read from the CLI rather than assumed, and is
+  tracked per conversation
+- **Subagent panel** — a collapsible list of spawned agents with their names and output so far
+- **Ultracode toggle** — the keyword is highlighted as you type it, with a one-tap skip for a
+  single turn
+- **Voice input** — dictate a prompt, optionally sent the moment the recognizer finishes
+- **Find in conversation** and a searchable settings screen
+- **Survives being backgrounded** — a foreground service and wake lock hold the process while a
+  turn is in flight, since the CLI is a child of it
+- **CLI updater** — checks the installed version and updates in place
 - **Wake-up markers** — a turn started by a background monitor, a finished task or a scheduled
   fire says so (`woken by a background task · completed · …`) instead of reading as a new session
 - **Sign in** with an Anthropic account via `/login` in chat — the CLI's own OAuth over a real PTY
