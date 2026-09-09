@@ -500,6 +500,10 @@ class Session(app: Application) : AndroidViewModel(app) {
      * dying — without the completed reasoning block ever arriving, and a marker left in [live]
      * state would tick its clock forever and read as a hang.
      */
+    /** Reasoning tokens this stretch, and how many of them the transcript has been told about. */
+    private var thinkingAcc = 0
+    private var thinkingShown = 0
+
     private fun settleThinking() {
         val last = transcript.lastOrNull()
         if (last is Turn.Thinking && last.live) {
@@ -639,6 +643,7 @@ class Session(app: Application) : AndroidViewModel(app) {
                 status = "thinking"
                 val last = transcript.lastOrNull()
                 if (last is Turn.Thinking && last.live) return@launch
+                thinkingAcc = 0; thinkingShown = 0
                 transcript.add(
                     Turn.Thinking(
                         text = "", live = true, effort = event.effort,
@@ -653,10 +658,16 @@ class Session(app: Application) : AndroidViewModel(app) {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
                 responding = true
-                val last = transcript.lastOrNull()
-                if (last is Turn.Thinking && last.live) {
-                    transcript[transcript.lastIndex] =
-                        last.copy(tokens = last.tokens + (event.text.length / 4).coerceAtLeast(1))
+                // Reasoning arrives token by token. Rewriting the transcript entry on every one
+                // of them replaces a list item dozens of times a second, which makes the whole
+                // LazyColumn thrash — so accumulate here and only publish in visible steps.
+                thinkingAcc += (event.text.length / 4).coerceAtLeast(1)
+                if (thinkingAcc - thinkingShown >= 25) {
+                    thinkingShown = thinkingAcc
+                    val last = transcript.lastOrNull()
+                    if (last is Turn.Thinking && last.live) {
+                        transcript[transcript.lastIndex] = last.copy(tokens = thinkingAcc)
+                    }
                 }
             }
 

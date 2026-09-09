@@ -24,8 +24,8 @@ android {
         // writable data directory, which is exactly what the sandbox needs to do. Termux
         // used the same approach. Sideload only — Play Store requires a current target.
         targetSdk = 28
-        versionCode = 17
-        versionName = "1.8.0"
+        versionCode = 18
+        versionName = "1.8.1"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
     }

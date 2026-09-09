@@ -38,3 +38,4 @@ Cinder-v1.7.7.apk filter=lfs diff=lfs merge=lfs -text
 Cinder-v1.7.8.apk filter=lfs diff=lfs merge=lfs -text
 Cinder-v1.7.9.apk filter=lfs diff=lfs merge=lfs -text
 Cinder-v1.8.0.apk filter=lfs diff=lfs merge=lfs -text
+Cinder-v1.8.1.apk filter=lfs diff=lfs merge=lfs -text

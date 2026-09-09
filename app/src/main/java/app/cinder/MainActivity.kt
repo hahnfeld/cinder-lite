@@ -203,9 +203,17 @@ private fun Header(vm: Session, tab: Tab, onMenu: () -> Unit, onTab: (Tab) -> Un
                     .padding(horizontal = 4.dp, vertical = 2.dp)
             )
             Text("✦", color = Orange, fontSize = 18.sp)
-            Text("cinder", color = Text0, fontSize = 16.sp, fontFamily = mono, fontWeight = FontWeight.Bold)
+            Text(
+                "cinder", color = Text0, fontSize = 16.sp, fontFamily = mono,
+                fontWeight = FontWeight.Bold, maxLines = 1
+            )
             Spacer(Modifier.weight(1f))
-            Text(vm.status, color = if (vm.busy) Orange else Dim, fontSize = 11.sp, fontFamily = mono)
+            // Without maxLines these collapse to a sliver and wrap one character per line when
+            // the row runs out of width, which is what turned the header into a tall column.
+            Text(
+                vm.status, color = if (vm.busy) Orange else Dim, fontSize = 11.sp,
+                fontFamily = mono, maxLines = 1
+            )
             Surface(
                 color = Panel,
                 shape = RoundedCornerShape(4.dp),
@@ -218,12 +226,18 @@ private fun Header(vm: Session, tab: Tab, onMenu: () -> Unit, onTab: (Tab) -> Un
                 )
             }
             ModelPicker(vm)
+        }
+        // The effort picker lives on the path line rather than the title row: that row was
+        // already at seven children and a phone has no width left to give it.
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                vm.cwd.replace(Regex("^/data/(user/0|data)/[^/]+/files"), "~"),
+                color = Dim, fontSize = 10.sp, fontFamily = mono, maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
             EffortPicker(vm)
         }
-        Text(
-            vm.cwd.replace(Regex("^/data/(user/0|data)/[^/]+/files"), "~"),
-            color = Dim, fontSize = 10.sp, fontFamily = mono, maxLines = 1
-        )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Tab.entries.forEach { t ->
                 val on = t == tab
