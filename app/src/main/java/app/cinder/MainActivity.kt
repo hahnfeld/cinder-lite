@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -63,6 +65,19 @@ class MainActivity : ComponentActivity() {
         ) {
             askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
+        // Last-resort back: leave the app the way switching apps does, rather than finishing.
+        //
+        // Registered before setContent so every Compose BackHandler is dispatched ahead of it —
+        // this only runs once nothing on screen is left to close. Finishing would destroy the
+        // view model, and with it the transcript and the engine's own bookkeeping, for what the
+        // user meant as "go back to what I was doing before". The CLI is a child of this
+        // process, so that is also the difference between backgrounding a running turn and
+        // ending it.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                moveTaskToBack(true)
+            }
+        })
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
@@ -121,6 +136,20 @@ private fun Root(vm: Session) {
                     Header(vm, tab, onMenu = { scope.launch { drawer.open() } }) { tab = it }
                 }
             ) { pad ->
+                // Back peels off one layer of UI at a time, and only leaves the app once there
+                // is nothing left to close. Disabling it when there isn't hands the press to the
+                // system, which is what makes the last press behave like a normal exit rather
+                // than a dead button.
+                //
+                // The preview registers its own handler further down; a handler composed later
+                // is dispatched first, so an open preview still closes before any of this.
+                BackHandler(enabled = drawer.isOpen || vm.searchOpen || tab != Tab.Chat) {
+                    when {
+                        drawer.isOpen -> scope.launch { drawer.close() }
+                        vm.searchOpen -> vm.closeSearch()
+                        else -> tab = Tab.Chat
+                    }
+                }
                 Box(Modifier.padding(pad).fillMaxSize()) {
                     when (tab) {
                         Tab.Chat -> ChatTab(vm)

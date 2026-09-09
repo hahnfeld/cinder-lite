@@ -65,6 +65,7 @@ libraries), each credited with its license below.
 - **Survives being backgrounded** — a foreground service and wake lock hold the process while a
   turn is in flight, since the CLI is a child of it
 - **CLI updater** — checks the installed version and updates in place
+- **Back peels off one layer at a time** — preview, then drawer, then find, then back to chat; at the root it backgrounds the app rather than finishing it, because the CLI is a child of this process and finishing would end a running turn
 - **Wake-up markers** — a turn started by a background monitor, a finished task or a scheduled
   fire says so (`woken by a background task · completed · …`) instead of reading as a new session
 - **Sign in** with an Anthropic account via `/login` in chat — the CLI's own OAuth over a real PTY
