@@ -587,6 +587,52 @@ class Session(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Whether the UI is actually on screen.
+     *
+     * A finished turn is only worth a notification if the user isn't already looking at it —
+     * otherwise every reply buzzes the phone while you read the last one.
+     */
+    var foreground by mutableStateOf(true)
+
+    /** Off by default: a notification per turn is noise if you sit in the app. */
+    var notifyOnDone by mutableStateOf(true)
+
+    /**
+     * Ping the phone that a turn ended. Reuses the agent-ping channel and receiver rather than
+     * introducing a second one — same delivery path, already permission-checked.
+     */
+    private fun notifyTurnDone(summary: String) {
+        val ctx = getApplication<Application>()
+        val last = transcript.lastOrNull { it is Turn.Assistant } as? Turn.Assistant
+        val body = last?.text?.trim()?.lineSequence()?.firstOrNull { it.isNotBlank() }
+            ?.take(140).orEmpty().ifBlank { summary }
+        runCatching {
+            val nm = ctx.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+            val channel = "cinder-agent"
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(
+                    channel, "Agent pings", android.app.NotificationManager.IMPORTANCE_HIGH
+                )
+            )
+            val open = android.app.PendingIntent.getActivity(
+                ctx, 0, android.content.Intent(ctx, MainActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            val n = android.app.Notification.Builder(ctx, channel)
+                .setContentTitle("Claude finished · $summary")
+                .setContentText(body)
+                .setStyle(android.app.Notification.BigTextStyle().bigText(body))
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(9001, n)
+        }
+    }
+
     /** Agents spawned this session, in the order they were created. */
     val subagents = mutableStateListOf<Subagent>()
 
@@ -888,7 +934,11 @@ class Session(app: Application) : AndroidViewModel(app) {
                 saveCurrent()   // a completed turn is worth keeping
                 val cost = event.costUsd?.let { "$%.4f".format(it) }
                 val secs = event.durationMs?.let { "%.1fs".format(it / 1000.0) }
-                transcript.add(Turn.Done(listOfNotNull(event.subtype, secs, cost).joinToString(" · ")))
+                val summary = listOfNotNull(event.subtype, secs, cost).joinToString(" · ")
+                transcript.add(Turn.Done(summary))
+                // Only when the user has actually looked away — otherwise every reply buzzes
+                // the phone while they're reading the previous one.
+                if (notifyOnDone && !foreground) notifyTurnDone(summary)
             }
 
             is Event.Wake -> {

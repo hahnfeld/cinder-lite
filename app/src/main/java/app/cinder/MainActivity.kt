@@ -55,8 +55,22 @@ private val mono = FontFamily.Monospace
 class MainActivity : ComponentActivity() {
     private val vm: Session by viewModels()
 
+    /**
+     * POST_NOTIFICATIONS has been in the manifest all along but was never requested, so on
+     * Android 13+ every notification this app posted — including the agent's own `notify` —
+     * was dropped silently unless the user had granted it by hand in system settings.
+     */
+    private val askNotify =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
@@ -66,6 +80,19 @@ class MainActivity : ComponentActivity() {
                 )
             ) { Root(vm) }
         }
+    }
+
+    // A finished turn only earns a notification if the user has looked away. Tracking that here
+    // rather than guessing from the lifecycle of a composable keeps it correct across rotation
+    // and the drawer, which both recompose without the app ever leaving the screen.
+    override fun onStart() {
+        super.onStart()
+        vm.foreground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        vm.foreground = false
     }
 }
 
@@ -1239,6 +1266,32 @@ private fun SetupTab(vm: Session) {
         Text(
             "Sign in from the chat tab with /login — it runs the CLI's own OAuth on a terminal, " +
                 "opens the page in your browser, and takes the code back as a chat message.",
+            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
+        )
+        HorizontalDivider(color = Line)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("notifications", color = Dim, fontFamily = mono, fontSize = 11.sp)
+            Spacer(Modifier.weight(1f))
+            Surface(
+                color = Color.Transparent,
+                shape = RoundedCornerShape(4.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp, if (vm.notifyOnDone) Green.copy(alpha = .6f) else Line
+                ),
+                onClick = { vm.notifyOnDone = !vm.notifyOnDone }
+            ) {
+                Text(
+                    if (vm.notifyOnDone) "on" else "off",
+                    color = if (vm.notifyOnDone) Green else Dim,
+                    fontFamily = mono, fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            }
+        }
+        Text(
+            "Buzzes the phone when a turn finishes — but only while the app is in the " +
+                "background, so replies you're already reading stay silent. Long agent runs are " +
+                "the point: send one, put the phone down, get told when it lands.",
             color = Dim, fontSize = 11.sp, lineHeight = 16.sp
         )
         HorizontalDivider(color = Line)
