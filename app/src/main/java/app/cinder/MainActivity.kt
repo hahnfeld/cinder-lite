@@ -926,9 +926,39 @@ private fun ToolCard(tool: Turn.Tool) {
     }
 }
 
+/**
+ * Paints every occurrence of "ultracode" purple as you type.
+ *
+ * The offset mapping is the identity because nothing is inserted or removed — only styled — so
+ * the cursor and selection stay exactly where the user put them.
+ */
+private object UltracodeHighlight : androidx.compose.ui.text.input.VisualTransformation {
+    private val word = Regex("ultracode", RegexOption.IGNORE_CASE)
+
+    override fun filter(t: androidx.compose.ui.text.AnnotatedString):
+        androidx.compose.ui.text.input.TransformedText {
+        val b = androidx.compose.ui.text.AnnotatedString.Builder(t.text)
+        for (m in word.findAll(t.text)) {
+            b.addStyle(
+                androidx.compose.ui.text.SpanStyle(
+                    color = Purple, fontWeight = FontWeight.Bold
+                ),
+                m.range.first, m.range.last + 1
+            )
+        }
+        return androidx.compose.ui.text.input.TransformedText(
+            b.toAnnotatedString(),
+            androidx.compose.ui.text.input.OffsetMapping.Identity
+        )
+    }
+}
+
 @Composable
 private fun Composer(vm: Session) {
     var text by remember { mutableStateOf("") }
+    // The keyword can arrive two ways — the toggle, or typed into the box. Both need to look
+    // armed, or the banner lies about what the next prompt is going to do.
+    val typedUltra = remember(text) { text.contains("ultracode", ignoreCase = true) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { vm.attachFile(it) }
     }
@@ -962,23 +992,31 @@ private fun Composer(vm: Session) {
         }
         // Ultracode can spawn a lot of agents, so its state is never implicit: while it's on the
         // next prompt is visibly marked, and this is the one-tap way out for a single turn.
-        if (vm.ultracode) {
-            val skipping = vm.skipUltracodeOnce
+        if (vm.ultracode || typedUltra) {
+            // A keyword you typed yourself can't be "skipped" — it's your text, and silently
+            // stripping it would be worse than leaving it. Only the toggle offers the opt-out.
+            val skipping = vm.ultracode && vm.skipUltracodeOnce
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 8.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background((if (skipping) Dim else Purple).copy(alpha = .13f))
                     .border(1.dp, (if (skipping) Dim else Purple).copy(alpha = .5f),
                             RoundedCornerShape(4.dp))
-                    .clickable { vm.skipUltracodeOnce = !skipping }
+                    .then(
+                        if (vm.ultracode) Modifier.clickable { vm.skipUltracodeOnce = !skipping }
+                        else Modifier
+                    )
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(if (skipping) "○" else "⏣", color = if (skipping) Dim else Purple, fontSize = 12.sp)
                 Text(
-                    if (skipping) "ultracode skipped for this turn - tap to re-arm"
-                    else "next prompt runs ultracode - tap to skip once",
+                    when {
+                        skipping -> "ultracode skipped for this turn - tap to re-arm"
+                        !vm.ultracode -> "ultracode keyword in your message - it will run"
+                        else -> "next prompt runs ultracode - tap to skip once"
+                    },
                     color = if (skipping) Dim else Purple, fontFamily = mono, fontSize = 10.sp,
                     maxLines = 1, modifier = Modifier.weight(1f)
                 )
@@ -1002,8 +1040,14 @@ private fun Composer(vm: Session) {
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("ask claude…", fontFamily = mono, fontSize = 13.sp, color = Dim) },
                 textStyle = androidx.compose.ui.text.TextStyle(color = Text0, fontSize = 13.sp),
+                // Typing the keyword yourself is the other way ultracode turns on, and until now
+                // that was invisible — you had no way to tell a multi-agent run was about to
+                // happen. Colouring the word makes both routes look the same.
+                visualTransformation = UltracodeHighlight,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Orange, unfocusedBorderColor = Line, cursorColor = Orange
+                    focusedBorderColor = if (typedUltra) Purple else Orange,
+                    unfocusedBorderColor = if (typedUltra) Purple.copy(alpha = .6f) else Line,
+                    cursorColor = Orange
                 ),
                 shape = RoundedCornerShape(4.dp),
                 maxLines = 5
