@@ -218,6 +218,7 @@ private fun Header(vm: Session, tab: Tab, onMenu: () -> Unit, onTab: (Tab) -> Un
                 )
             }
             ModelPicker(vm)
+            EffortPicker(vm)
         }
         Text(
             vm.cwd.replace(Regex("^/data/(user/0|data)/[^/]+/files"), "~"),
@@ -287,6 +288,48 @@ private fun CleanWorkspaceDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
             }
         }
     )
+}
+
+/**
+ * Reasoning effort. Sits next to the model picker because it changes what a turn costs in time
+ * the same way the model does — and because the thinking marker names it, so it needs to be
+ * something the user can actually see and change.
+ */
+@Composable
+private fun EffortPicker(vm: Session) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Surface(
+            color = Panel,
+            shape = RoundedCornerShape(4.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Dim.copy(alpha = .4f)),
+            onClick = { open = true }
+        ) {
+            Text(
+                "✻ ${vm.effort} ▾",
+                color = Dim, fontFamily = mono, fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = Panel) {
+            Text(
+                "reasoning effort",
+                color = Dim, fontFamily = mono, fontSize = 9.sp,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+            vm.efforts.forEach { e ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            e, fontFamily = mono, fontSize = 12.sp,
+                            color = if (e == vm.effort) Orange else Text0
+                        )
+                    },
+                    onClick = { vm.chooseEffort(e); open = false }
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -447,12 +490,39 @@ private fun TurnRow(turn: Turn) {
                         Modifier.clip(RoundedCornerShape(3.dp)).clickable { open = !open }
                     else Modifier
                 ) {
-                    Text("✻", color = Dim, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-                    Text(
-                        if (turn.text.isBlank()) "thinking…"
-                        else if (open) "thinking" else "thinking · tap to read",
-                        color = Dim, fontFamily = mono, fontSize = 11.sp
-                    )
+                    // While reasoning is live the marker has to prove the app is alive: the star
+                    // cycles and the clock ticks. A frozen "thinking…" is indistinguishable from
+                    // a hang, which is the entire reason this row exists.
+                    var tick by remember(turn.startedAt) { mutableStateOf(0) }
+                    LaunchedEffect(turn.live, turn.startedAt) {
+                        while (turn.live) {
+                            kotlinx.coroutines.delay(250)
+                            tick++
+                        }
+                    }
+                    val star = if (turn.live) "✻✢✳✶"[(tick / 2) % 4].toString() else "✻"
+                    Text(star, color = if (turn.live) Orange else Dim, fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 2.dp))
+
+                    val label = if (turn.live) {
+                        val secs = ((System.currentTimeMillis() - turn.startedAt) / 1000).toInt()
+                        buildString {
+                            append("thinking")
+                            if (turn.effort.isNotBlank()) append(" (${turn.effort})")
+                            append(" · ${secs}s")
+                            if (turn.tokens > 0) {
+                                append(" · ")
+                                append(
+                                    if (turn.tokens >= 1000) "%.1fk".format(turn.tokens / 1000f)
+                                    else turn.tokens.toString()
+                                )
+                                append(" tokens")
+                            }
+                        }
+                    } else if (turn.text.isBlank()) "thought"
+                    else if (open) "thinking" else "thinking · tap to read"
+
+                    Text(label, color = Dim, fontFamily = mono, fontSize = 11.sp)
                 }
                 // Reasoning text only exists when the CLI is set to summarize it; otherwise the
                 // block arrives empty and the marker alone is the signal.

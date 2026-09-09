@@ -48,7 +48,18 @@ sealed interface Turn {
         val added: Int? = null,
         val removed: Int? = null
     ) : Turn
-    data class Thinking(val text: String) : Turn
+    /**
+     * A stretch of reasoning. [live] is true while it's still being produced, which is when the
+     * marker needs to prove the app isn't hung: [startedAt] drives an elapsed clock and [tokens]
+     * an approximate count of reasoning produced so far.
+     */
+    data class Thinking(
+        val text: String,
+        val live: Boolean = false,
+        val effort: String = "",
+        val startedAt: Long = 0L,
+        val tokens: Int = 0
+    ) : Turn
     data class Notice(val text: String, val isError: Boolean = false) : Turn
     data class Link(val url: String, val label: String) : Turn
     data class Done(val summary: String) : Turn
@@ -484,6 +495,18 @@ class Session(app: Application) : AndroidViewModel(app) {
         transcript.add(Turn.Notice("resumed session ${record.id.take(8)}"))
     }
 
+    /**
+     * Close out a live thinking marker. A turn can end — normally, by interrupt, or by the engine
+     * dying — without the completed reasoning block ever arriving, and a marker left in [live]
+     * state would tick its clock forever and read as a hang.
+     */
+    private fun settleThinking() {
+        val last = transcript.lastOrNull()
+        if (last is Turn.Thinking && last.live) {
+            transcript[transcript.lastIndex] = last.copy(live = false)
+        }
+    }
+
     private var pendingSend: kotlinx.coroutines.Job? = null
 
     /**
@@ -501,6 +524,7 @@ class Session(app: Application) : AndroidViewModel(app) {
         pendingSend?.cancel()          // a first message still waiting on the toolchain install
         pendingSend = null
         engine.stop()
+        settleThinking()
         busy = false
         responding = false
         status = "stopped"
@@ -605,6 +629,37 @@ class Session(app: Application) : AndroidViewModel(app) {
                 responseTokens = responseChars / 4
             }
 
+            // Reasoning has begun. Put the marker up immediately — this is the whole point:
+            // the completed Thinking block can be a minute away on a high-effort turn, and until
+            // now nothing was drawn in that window at all.
+            is Event.ThinkingStart -> {
+                if (!busy) busy = true
+                awaitingFreshTurn = false
+                responding = true
+                status = "thinking"
+                val last = transcript.lastOrNull()
+                if (last is Turn.Thinking && last.live) return@launch
+                transcript.add(
+                    Turn.Thinking(
+                        text = "", live = true, effort = event.effort,
+                        startedAt = System.currentTimeMillis(), tokens = 0
+                    )
+                )
+            }
+
+            // Reasoning streaming in. Only the counter moves; the text itself stays hidden unless
+            // the CLI is summarising, in which case the finished block replaces this row.
+            is Event.ThinkingDelta -> {
+                if (!busy) busy = true
+                awaitingFreshTurn = false
+                responding = true
+                val last = transcript.lastOrNull()
+                if (last is Turn.Thinking && last.live) {
+                    transcript[transcript.lastIndex] =
+                        last.copy(tokens = last.tokens + (event.text.length / 4).coerceAtLeast(1))
+                }
+            }
+
             is Event.Thinking -> {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
@@ -613,9 +668,16 @@ class Session(app: Application) : AndroidViewModel(app) {
                 status = "working"
                 // Consecutive thinking blocks are one stretch of reasoning, not several.
                 val last = transcript.lastOrNull()
+                // The live placeholder is now finished: settle it rather than stacking a second
+                // marker underneath it.
+                if (last is Turn.Thinking && last.live) {
+                    transcript[transcript.lastIndex] =
+                        last.copy(text = event.text, live = false)
+                    return@launch
+                }
                 if (last is Turn.Thinking && event.text.isBlank()) return@launch
                 if (last is Turn.Thinking && last.text.isNotBlank()) {
-                    transcript[transcript.lastIndex] = Turn.Thinking(last.text + "\n" + event.text)
+                    transcript[transcript.lastIndex] = last.copy(text = last.text + "\n" + event.text)
                 } else {
                     transcript.add(Turn.Thinking(event.text))
                 }
@@ -694,6 +756,7 @@ class Session(app: Application) : AndroidViewModel(app) {
                     awaitingFreshTurn = false
                     return@launch
                 }
+                settleThinking()
                 busy = false
                 responding = false
                 status = "idle"
@@ -1445,6 +1508,21 @@ class Session(app: Application) : AndroidViewModel(app) {
 
     var modelsLive by mutableStateOf(false)
         private set
+
+    /** Effort levels the CLI accepts for --effort, cheapest first. */
+    val efforts = listOf("low", "medium", "high", "xhigh", "max")
+
+    /** Current reasoning effort; shown live in the thinking marker. */
+    var effort by mutableStateOf(engine.effort)
+
+    fun chooseEffort(e: String) {
+        if (e == effort) return
+        effort = e
+        engine.effort = e
+        // --effort is read at launch like --model, so the running process can't be re-levelled.
+        engine.stop()
+        transcript.add(Turn.Notice("effort: $e (new session)"))
+    }
 
     fun chooseModel(m: String) {
         if (m == model) return

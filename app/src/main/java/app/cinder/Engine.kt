@@ -73,6 +73,14 @@ sealed interface Event {
     data class Message(val text: String) : Event
     /** A thinking block. Its text is empty unless the CLI is set to summarize reasoning. */
     data class Thinking(val text: String) : Event
+    /**
+     * Reasoning has *started*. Fires on the content_block_start frame, which is the earliest
+     * point the CLI tells us anything — the completed [Thinking] block doesn't arrive until the
+     * model has finished reasoning, which on a long turn is tens of seconds of apparent freeze.
+     */
+    data class ThinkingStart(val effort: String) : Event
+    /** A chunk of streamed *reasoning*, as it is produced. Drives the live marker. */
+    data class ThinkingDelta(val text: String) : Event
     /** A small chunk of streamed output text (from --include-partial-messages), for live counting. */
     data class Delta(val text: String) : Event
     /** The model called a tool: Read, Edit, Write, Bash, Glob, … */
@@ -112,6 +120,14 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
     /** Model id handed to --model; empty means the CLI's own default. */
     var model: String = "claude-sonnet-5"
 
+    /**
+     * Reasoning effort handed to --effort: low, medium, high, xhigh, max.
+     * Surfaced in the thinking marker so the user can see what they're waiting on — a max-effort
+     * turn legitimately takes a long time, and saying so is the difference between "working" and
+     * "hung".
+     */
+    var effort: String = "medium"
+
     /** When set, the next launch resumes that stored session instead of starting fresh. */
     var resumeId: String? = null
 
@@ -138,6 +154,7 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             // outright when it detects root, and it adds nothing over the permission mode.
             append("--permission-mode $permissionMode ")
             if (model.isNotBlank()) append("--model $model ")
+            if (effort.isNotBlank()) append("--effort $effort ")
             resumeId?.let { append("--resume $it ") }
             // Without this the model assumes a normal Linux box and reaches for apt/brew/sudo-less
             // apk, all of which fail here.
@@ -227,11 +244,27 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             // the complete assistant message that arrives at the end of the block.
             "stream_event" -> {
                 val ev = json.optJSONObject("event") ?: return
-                if (ev.optString("type") == "content_block_delta") {
-                    val delta = ev.optJSONObject("delta")
-                    val text = delta?.optString("text").orEmpty()
-                        .ifEmpty { delta?.optString("thinking").orEmpty() }
-                    if (text.isNotEmpty()) onEvent(Event.Delta(text))
+                when (ev.optString("type")) {
+                    // The moment reasoning begins. Without this the UI has nothing to show until
+                    // the whole thinking block lands, which is exactly the "looks stuck" window.
+                    "content_block_start" -> {
+                        val t = ev.optJSONObject("content_block")?.optString("type")
+                        if (t == "thinking" || t == "redacted_thinking") {
+                            onEvent(Event.ThinkingStart(effort))
+                        }
+                    }
+                    "content_block_delta" -> {
+                        val delta = ev.optJSONObject("delta")
+                        // Reasoning and prose both stream as deltas but mean different things to
+                        // the UI: one drives the thinking marker, the other the response counter.
+                        val think = delta?.optString("thinking").orEmpty()
+                        if (think.isNotEmpty()) {
+                            onEvent(Event.ThinkingDelta(think))
+                        } else {
+                            val text = delta?.optString("text").orEmpty()
+                            if (text.isNotEmpty()) onEvent(Event.Delta(text))
+                        }
+                    }
                 }
             }
 
