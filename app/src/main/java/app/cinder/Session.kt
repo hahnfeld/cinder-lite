@@ -301,13 +301,23 @@ class Session(app: Application) : AndroidViewModel(app) {
         if (userText.isBlank() && attachments.isEmpty()) return
         transcript.add(Turn.User(userText))
 
+        // Ultracode is opted into per-prompt by keyword, so it rides along with the text rather
+        // than being configured once at launch — which is also why a single turn can opt back
+        // out of it without disturbing the setting.
+        val skip = skipUltracodeOnce
+        skipUltracodeOnce = false
+        // Don't double the keyword if it's already in what was typed.
+        val body =
+            if (ultracode && !skip && !userText.trimStart().startsWith("ultracode", ignoreCase = true))
+                "ultracode $userText" else userText
+
         // Attached files live in the workspace; name them so the agent knows they're there and
         // what it may do with them.
-        val text = if (attachments.isEmpty()) userText else buildString {
+        val text = if (attachments.isEmpty()) body else buildString {
             append("Files are attached in the working directory: ")
             append(attachments.joinToString(", ") { "/workspace/${it.name}" })
             append(". You can read, unzip, edit or run them as needed.\n\n")
-            append(userText)
+            append(body)
         }.also { attachments = emptyList() }
 
         // A login is a conversation of its own: while one is running, whatever you type is typed
@@ -560,6 +570,59 @@ class Session(app: Application) : AndroidViewModel(app) {
                 true
             }
             else -> false
+        }
+    }
+
+    /** True while `claude update` is running, so the button can show it's working. */
+    var updating by mutableStateOf(false)
+
+    /** Run a sandbox command to completion and hand back its combined output. */
+    private fun capture(inner: String): String = runCatching {
+        val p = sandbox.spawn("$inner 2>&1")
+        val out = java.io.BufferedReader(java.io.InputStreamReader(p.inputStream)).readText()
+        p.waitFor()
+        out.trim()
+    }.getOrElse { "" }
+
+    private val versionRe = Regex("""\d+\.\d+\.\d+""")
+
+    /**
+     * Update the CLI in place.
+     *
+     * The version before and after is the ground truth here rather than whatever `claude update`
+     * prints — its wording is not a stable interface, and comparing the two readings tells us
+     * plainly whether anything actually changed.
+     */
+    fun updateCli() {
+        if (updating) return
+        if (!sandbox.engineReady) {
+            transcript.add(Turn.Notice("engine not installed yet — see Setup", isError = true)); return
+        }
+        updating = true
+        transcript.add(Turn.Notice("checking for a newer claude CLI…"))
+        viewModelScope.launch(Dispatchers.IO) {
+            val before = versionRe.find(capture("/usr/local/bin/claude --version"))?.value
+            val log = capture("/usr/local/bin/claude update")
+            val after = versionRe.find(capture("/usr/local/bin/claude --version"))?.value
+
+            viewModelScope.launch(Dispatchers.Main) {
+                when {
+                    before == null || after == null -> {
+                        transcript.add(Turn.Notice("couldn't read the CLI version", isError = true))
+                        if (log.isNotBlank()) transcript.add(Turn.Notice(log))
+                    }
+                    before == after ->
+                        transcript.add(Turn.Notice("cli is already on the latest version ($after)"))
+                    else -> {
+                        transcript.add(Turn.Notice("updated claude CLI $before → $after"))
+                        // --model/--effort and the binary itself are all read at launch, so the
+                        // running process is still the old build until it is restarted.
+                        engine.stop()
+                        transcript.add(Turn.Notice("engine restarted on the new build"))
+                    }
+                }
+                updating = false
+            }
         }
     }
 
@@ -1522,6 +1585,24 @@ class Session(app: Application) : AndroidViewModel(app) {
 
     /** Effort levels the CLI accepts for --effort, cheapest first. */
     val efforts = listOf("low", "medium", "high", "xhigh", "max")
+
+    /**
+     * Ultracode is not an --effort level and not a flag at all: the CLI turns it on when the
+     * word appears in the prompt. So this is a toggle that prefixes what you send, not something
+     * handed to the process — which also means it can change mid-session, unlike effort.
+     */
+    var ultracode by mutableStateOf(false)
+
+    /** Set for one turn only, to send a prompt plainly while leaving the mode on. */
+    var skipUltracodeOnce by mutableStateOf(false)
+
+    fun toggleUltracode() {
+        ultracode = !ultracode
+        if (!ultracode) skipUltracodeOnce = false
+        transcript.add(Turn.Notice(
+            if (ultracode) "ultracode on — prompts opt in to multi-agent orchestration"
+            else "ultracode off"))
+    }
 
     /** Current reasoning effort; shown live in the thinking marker. */
     var effort by mutableStateOf(engine.effort)

@@ -48,6 +48,7 @@ private val Orange = Color(0xFFE0603A)   // ember
 private val Green = Color(0xFF7FB069)
 private val Red = Color(0xFFD9534F)
 private val Blue = Color(0xFF6C9BD1)
+private val Purple = Color(0xFFBD93F9)  // ultracode
 
 private val mono = FontFamily.Monospace
 
@@ -265,6 +266,18 @@ private fun Header(vm: Session, tab: Tab, onMenu: () -> Unit, onTab: (Tab) -> Un
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                 )
             }
+            Surface(
+                color = Color.Transparent,
+                shape = RoundedCornerShape(4.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Line),
+                onClick = { vm.updateCli() }
+            ) {
+                Text(
+                    if (vm.updating) "checking…" else "update",
+                    color = if (vm.updating) Dim else Green, fontFamily = mono, fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
         }
         HorizontalDivider(color = Line)
     }
@@ -320,8 +333,8 @@ private fun EffortPicker(vm: Session) {
             onClick = { open = true }
         ) {
             Text(
-                "✻ ${vm.effort} ▾",
-                color = Dim, fontFamily = mono, fontSize = 11.sp,
+                if (vm.ultracode) "⏣ ultracode ▾" else "✻ ${vm.effort} ▾",
+                color = if (vm.ultracode) Purple else Dim, fontFamily = mono, fontSize = 11.sp,
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
             )
         }
@@ -342,6 +355,25 @@ private fun EffortPicker(vm: Session) {
                     onClick = { vm.chooseEffort(e); open = false }
                 )
             }
+            HorizontalDivider(color = Line)
+            // Below the divider because it isn't an effort level: it's a keyword prefixed to the
+            // prompt, so unlike effort it takes hold on the very next turn with no restart.
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(
+                            if (vm.ultracode) "⏣ ultracode - on" else "⏣ ultracode - off",
+                            fontFamily = mono, fontSize = 12.sp,
+                            color = if (vm.ultracode) Purple else Text0
+                        )
+                        Text(
+                            "multi-agent orchestration; can spawn dozens of agents",
+                            fontFamily = mono, fontSize = 9.sp, color = Dim
+                        )
+                    }
+                },
+                onClick = { vm.toggleUltracode(); open = false }
+            )
         }
     }
 }
@@ -926,6 +958,30 @@ private fun Composer(vm: Session) {
                         )
                     }
                 }
+            }
+        }
+        // Ultracode can spawn a lot of agents, so its state is never implicit: while it's on the
+        // next prompt is visibly marked, and this is the one-tap way out for a single turn.
+        if (vm.ultracode) {
+            val skipping = vm.skipUltracodeOnce
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background((if (skipping) Dim else Purple).copy(alpha = .13f))
+                    .border(1.dp, (if (skipping) Dim else Purple).copy(alpha = .5f),
+                            RoundedCornerShape(4.dp))
+                    .clickable { vm.skipUltracodeOnce = !skipping }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(if (skipping) "○" else "⏣", color = if (skipping) Dim else Purple, fontSize = 12.sp)
+                Text(
+                    if (skipping) "ultracode skipped for this turn - tap to re-arm"
+                    else "next prompt runs ultracode - tap to skip once",
+                    color = if (skipping) Dim else Purple, fontFamily = mono, fontSize = 10.sp,
+                    maxLines = 1, modifier = Modifier.weight(1f)
+                )
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
