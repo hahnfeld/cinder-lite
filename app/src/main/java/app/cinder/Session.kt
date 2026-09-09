@@ -528,6 +528,7 @@ class Session(app: Application) : AndroidViewModel(app) {
         // A new conversation starts with an empty context. Carrying the old count over made the
         // marker read as though the fresh session had inherited the last one's history.
         contextTokens = 0
+        forgetLastTurn()
         busy = false
         status = "idle"
         initSeen = false
@@ -555,6 +556,7 @@ class Session(app: Application) : AndroidViewModel(app) {
         // Each conversation has its own context. The stored figure is what this one had reached;
         // the first reply after resuming replaces it with the CLI's own count.
         contextTokens = record.tokens
+        forgetLastTurn()
         initSeen = false
         wakeArmed = null
         wakeExplained = false
@@ -653,6 +655,18 @@ class Session(app: Application) : AndroidViewModel(app) {
 
     /** Waves off the offer to send a failed turn again, without forgetting the message itself. */
     fun dismissRetry() {
+        lastTurnFailed = false
+    }
+
+    /**
+     * Drops the last message and the offer to resend it.
+     *
+     * Both belong to one conversation. Left alone they follow you into the next one, where
+     * "that turn didn't finish" refers to a turn that isn't on screen and resending it would put
+     * an unrelated prompt into a fresh session.
+     */
+    private fun forgetLastTurn() {
+        lastPrompt = null
         lastTurnFailed = false
     }
 
