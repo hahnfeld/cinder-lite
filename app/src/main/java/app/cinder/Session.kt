@@ -65,6 +65,19 @@ sealed interface Turn {
     data class Done(val summary: String) : Turn
 }
 
+/**
+ * One spawned agent. [id] is the tool_use id of the Agent call that created it, which is how the
+ * CLI tags the frames it produces.
+ */
+data class Subagent(
+    val id: String,
+    val name: String,
+    val type: String,
+    val tokens: Int = 0,
+    val running: Boolean = true,
+    val failed: Boolean = false
+)
+
 data class Install(val label: String, val present: Boolean, val detail: String)
 
 /** One entry in the model picker: the exact id passed to --model, plus its readable name. */
@@ -473,6 +486,7 @@ class Session(app: Application) : AndroidViewModel(app) {
         engine.resumeId = null
         currentId = null
         transcript.clear()
+        subagents.clear(); subagentAcc.clear(); subagentShown.clear()
         busy = false
         status = "idle"
         initSeen = false
@@ -572,6 +586,17 @@ class Session(app: Application) : AndroidViewModel(app) {
             else -> false
         }
     }
+
+    /** Agents spawned this session, in the order they were created. */
+    val subagents = mutableStateListOf<Subagent>()
+
+    /** Collapsed by default: it's a status readout, not something to read. */
+    var subagentsOpen by mutableStateOf(false)
+
+    val subagentTokens get() = subagents.sumOf { it.tokens }
+
+    private var subagentAcc = HashMap<String, Int>()
+    private var subagentShown = HashMap<String, Int>()
 
     /** True while `claude update` is running, so the button can show it's working. */
     var updating by mutableStateOf(false)
@@ -734,6 +759,18 @@ class Session(app: Application) : AndroidViewModel(app) {
                 }
             }
 
+            is Event.SubagentDelta -> {
+                // Same throttle as the thinking counter: a per-token list rewrite makes the
+                // panel thrash, and nobody can read a number changing 40 times a second.
+                val acc = (subagentAcc[event.parentId] ?: 0) + (event.text.length / 4).coerceAtLeast(1)
+                subagentAcc[event.parentId] = acc
+                if (acc - (subagentShown[event.parentId] ?: 0) >= 25) {
+                    subagentShown[event.parentId] = acc
+                    val i = subagents.indexOfFirst { it.id == event.parentId }
+                    if (i >= 0) subagents[i] = subagents[i].copy(tokens = acc)
+                }
+            }
+
             is Event.Thinking -> {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
@@ -760,6 +797,15 @@ class Session(app: Application) : AndroidViewModel(app) {
             is Event.ToolCall -> {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
+                // "Task" was the old name for the same tool; both still appear in the wild.
+                if (event.name == "Agent" || event.name == "Task") {
+                    val label = event.input.optString("description")
+                        .ifBlank { event.input.optString("subagent_type") }
+                        .ifBlank { "agent" }
+                    subagents.add(Subagent(
+                        id = event.id, name = label,
+                        type = event.input.optString("subagent_type").ifBlank { "general" }))
+                }
                 // Work out what this call does to a file before anything touches the disk — a
                 // Write onto a path that already exists is an edit, not a creation, and only the
                 // pre-call state can tell those apart.
@@ -800,6 +846,11 @@ class Session(app: Application) : AndroidViewModel(app) {
             }
 
             is Event.ToolResult -> {
+                val si = subagents.indexOfFirst { it.id == event.id }
+                if (si >= 0) subagents[si] = subagents[si].copy(
+                    running = false, failed = event.isError,
+                    tokens = maxOf(subagents[si].tokens, subagentAcc[event.id] ?: 0))
+
                 // The transcript can be cleared underneath us by "+ new" while a turn streams,
                 // so resolve the row and its index together and bail if it's gone.
                 val row = transcript.filterIsInstance<Turn.Tool>().lastOrNull { it.id == event.id }

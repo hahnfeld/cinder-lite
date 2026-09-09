@@ -927,6 +927,86 @@ private fun ToolCard(tool: Turn.Tool) {
 }
 
 /**
+ * Live readout of spawned agents, collapsed by default.
+ *
+ * A workflow can fan out to dozens of these, so the row is capped and the rest are counted
+ * rather than listed — an unbounded list would push the composer off the screen, which is the
+ * same class of bug as the header overflow.
+ */
+@Composable
+private fun SubagentPanel(vm: Session) {
+    if (vm.subagents.isEmpty()) return
+    val running = vm.subagents.count { it.running }
+    val total = vm.subagentTokens
+    val cap = 8
+
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(4.dp)).background(Ink)
+            .border(1.dp, Line, RoundedCornerShape(4.dp))
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clickable { vm.subagentsOpen = !vm.subagentsOpen }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("⚙", color = if (running > 0) Purple else Dim, fontSize = 12.sp)
+            Text(
+                buildString {
+                    append("${vm.subagents.size} subagent")
+                    if (vm.subagents.size != 1) append("s")
+                    if (running > 0) append(" · $running running")
+                    if (total > 0) append(" · ${fmtTok(total)} tokens")
+                },
+                color = if (running > 0) Purple else Dim, fontFamily = mono, fontSize = 10.sp,
+                maxLines = 1, modifier = Modifier.weight(1f)
+            )
+            Text(if (vm.subagentsOpen) "▴" else "▾", color = Dim, fontFamily = mono, fontSize = 10.sp)
+        }
+        if (vm.subagentsOpen) {
+            HorizontalDivider(color = Line)
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                vm.subagents.take(cap).forEach { a ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            if (a.failed) "×" else if (a.running) "◆" else "✓",
+                            color = if (a.failed) Red else if (a.running) Purple else Green,
+                            fontFamily = mono, fontSize = 10.sp
+                        )
+                        Text(
+                            a.name, color = Text0, fontFamily = mono, fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(a.type, color = Dim, fontFamily = mono, fontSize = 9.sp, maxLines = 1)
+                        Text(
+                            fmtTok(a.tokens), color = Dim, fontFamily = mono, fontSize = 9.sp,
+                            maxLines = 1
+                        )
+                    }
+                }
+                if (vm.subagents.size > cap) {
+                    Text(
+                        "+ ${vm.subagents.size - cap} more",
+                        color = Dim, fontFamily = mono, fontSize = 9.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun fmtTok(n: Int): String =
+    if (n >= 1000) "%.1fk".format(n / 1000f) else n.toString()
+
+/**
  * Paints every occurrence of "ultracode" purple as you type.
  *
  * The offset mapping is the identity because nothing is inserted or removed — only styled — so
@@ -990,6 +1070,8 @@ private fun Composer(vm: Session) {
                 }
             }
         }
+        SubagentPanel(vm)
+
         // Ultracode can spawn a lot of agents, so its state is never implicit: while it's on the
         // next prompt is visibly marked, and this is the one-tap way out for a single turn.
         if (vm.ultracode || typedUltra) {

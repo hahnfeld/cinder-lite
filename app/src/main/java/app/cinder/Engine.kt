@@ -83,6 +83,12 @@ sealed interface Event {
     data class ThinkingDelta(val text: String) : Event
     /** A small chunk of streamed output text (from --include-partial-messages), for live counting. */
     data class Delta(val text: String) : Event
+    /**
+     * Output produced by a subagent rather than the main turn. The CLI tags frames belonging to
+     * a spawned agent with the tool_use id that created it, which is what lets a delta be
+     * attributed to one agent instead of pooled into the main response counter.
+     */
+    data class SubagentDelta(val parentId: String, val text: String) : Event
     /** The model called a tool: Read, Edit, Write, Bash, Glob, … */
     data class ToolCall(val id: String, val name: String, val input: JSONObject) : Event
     /** The result that came back for a tool call. */
@@ -146,6 +152,9 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             // Emit incremental text deltas (stream_event frames) so the UI can show a live token
             // count as the response is produced, instead of one block at the very end.
             append("--include-partial-messages ")
+            // Without this a spawned agent is a black box: you see the Agent tool call go out
+            // and nothing at all until it returns, however long that takes.
+            append("--forward-subagent-text ")
             // Headless has no way to answer a permission prompt: an unattended request is simply
             // declined, which is what turned every Write into "permission denied". The workspace
             // is app-private and disposable, so the sandbox grants them up front.
@@ -244,6 +253,18 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             // the complete assistant message that arrives at the end of the block.
             "stream_event" -> {
                 val ev = json.optJSONObject("event") ?: return
+                // Frames from a spawned agent carry the id of the tool call that started it.
+                // They must not feed the main counters or the two turns' totals merge.
+                val parent = json.optString("parent_tool_use_id").takeIf { it.isNotBlank() }
+                if (parent != null) {
+                    if (ev.optString("type") == "content_block_delta") {
+                        val d = ev.optJSONObject("delta")
+                        val txt = d?.optString("text").orEmpty()
+                            .ifEmpty { d?.optString("thinking").orEmpty() }
+                        if (txt.isNotEmpty()) onEvent(Event.SubagentDelta(parent, txt))
+                    }
+                    return
+                }
                 when (ev.optString("type")) {
                     // The moment reasoning begins. Without this the UI has nothing to show until
                     // the whole thinking block lands, which is exactly the "looks stuck" window.
