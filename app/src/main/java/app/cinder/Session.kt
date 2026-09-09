@@ -94,7 +94,15 @@ data class Subagent(
     val type: String,
     val tokens: Int = 0,
     val running: Boolean = true,
-    val failed: Boolean = false
+    val failed: Boolean = false,
+    /**
+     * A stop has been asked for but the agent hasn't ended yet.
+     *
+     * Its own state, not a flavour of [running], because the CLI acknowledges a stop request
+     * without saying whether it stopped anything — the only proof is the agent's result turning
+     * up. Until it does, "stopping" is the truthful thing to show.
+     */
+    val stopping: Boolean = false
 )
 
 data class Install(val label: String, val present: Boolean, val detail: String)
@@ -144,6 +152,24 @@ class Session(app: Application) : AndroidViewModel(app) {
     var responseTokens by mutableStateOf(0)
         private set
     private var responseChars = 0
+
+    /**
+     * What the turn is doing right now, and the best number available for it.
+     *
+     * There has to be *something* moving for the whole time a turn is in flight. Keying the
+     * marker off output tokens alone left a silent gap whenever a turn began with reasoning —
+     * and if the CLI never streams a thinking block, that gap was the entire wait. So the label
+     * follows whichever counter is actually running, and falls back to saying nothing more than
+     * "working" rather than showing a zero.
+     */
+    val liveLabel: String
+        get() = when {
+            responseTokens > 0 -> "responding"
+            thinkingShown > 0 -> "thinking"
+            else -> "working"
+        }
+
+    val liveTokens: Int get() = if (responseTokens > 0) responseTokens else thinkingShown
     /** True once we've seen a streamed delta this turn, so complete messages don't double-count. */
     private var sawDelta = false
     var setupLog by mutableStateOf("")
@@ -578,7 +604,14 @@ class Session(app: Application) : AndroidViewModel(app) {
      */
     /** Reasoning tokens this stretch, and how many of them the transcript has been told about. */
     private var thinkingAcc = 0
-    private var thinkingShown = 0
+
+    /**
+     * Reasoning tokens actually published to the UI.
+     *
+     * Observable, unlike the accumulator beside it, because the live marker reads it — a plain
+     * Int would change without recomposing anything and the number would sit still on screen.
+     */
+    private var thinkingShown by mutableStateOf(0)
 
     private fun settleThinking() {
         val last = transcript.lastOrNull()
@@ -992,6 +1025,22 @@ class Session(app: Application) : AndroidViewModel(app) {
 
     val subagentTokens get() = subagents.sumOf { it.tokens }
 
+    /**
+     * Asks the CLI to stop one spawned agent.
+     *
+     * Only background agents can actually be stopped this way — a synchronous Agent call is a
+     * tool the turn is waiting on, not a background task, and the CLI has no id for it to stop.
+     * It answers the same either way, so the row says "stopping" and waits for the agent's
+     * result rather than reporting a success it can't verify.
+     */
+    fun stopSubagent(agent: Subagent) {
+        val i = subagents.indexOfFirst { it.id == agent.id }
+        if (i < 0 || !subagents[i].running) return
+        subagents[i] = subagents[i].copy(stopping = true)
+        engine.stopTask(agent.id)
+        transcript.add(Turn.Notice("asked ${agent.name} to stop"))
+    }
+
     private var subagentAcc = HashMap<String, Int>()
     private var subagentShown = HashMap<String, Int>()
 
@@ -1110,6 +1159,9 @@ class Session(app: Application) : AndroidViewModel(app) {
                 // giving us deltas, so the number still lands on the final block.
                 if (!sawDelta) { responseChars += event.text.length; responseTokens = responseChars / 4 }
                 learnContextWindow(event.text)
+                // Whatever the model was reasoning about, it has finished reasoning about it.
+                // Without this the clock on the thinking row keeps running underneath the answer.
+                settleThinking()
                 transcript.add(Turn.Assistant(event.text))
             }
 
@@ -1128,7 +1180,11 @@ class Session(app: Application) : AndroidViewModel(app) {
             is Event.ThinkingStart -> {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
-                responding = true
+                // Deliberately NOT `responding`: that flag drives the output-token marker, and
+                // reasoning produces no output tokens. Setting it here put a "responding… ~0
+                // tokens" line on screen for the whole thinking phase — which on a high-effort
+                // turn is most of it — where it read as a stalled counter. The live thinking row
+                // below is what covers this phase, with its own clock and its own count.
                 status = "thinking"
                 val last = transcript.lastOrNull()
                 if (last is Turn.Thinking && last.live) return@launch
@@ -1146,7 +1202,6 @@ class Session(app: Application) : AndroidViewModel(app) {
             is Event.ThinkingDelta -> {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
-                responding = true
                 // Reasoning arrives token by token. Rewriting the transcript entry on every one
                 // of them replaces a list item dozens of times a second, which makes the whole
                 // LazyColumn thrash — so accumulate here and only publish in visible steps.
@@ -1208,6 +1263,9 @@ class Session(app: Application) : AndroidViewModel(app) {
             is Event.ToolCall -> {
                 if (!busy) busy = true
                 awaitingFreshTurn = false
+                // A tool call ends the reasoning block that chose it: the row should show what
+                // that thinking took, not carry on counting while the tool runs.
+                settleThinking()
                 // "Task" was the old name for the same tool; both still appear in the wild.
                 if (event.name == "Agent" || event.name == "Task") {
                     val label = event.input.optString("description")
@@ -1259,7 +1317,7 @@ class Session(app: Application) : AndroidViewModel(app) {
             is Event.ToolResult -> {
                 val si = subagents.indexOfFirst { it.id == event.id }
                 if (si >= 0) subagents[si] = subagents[si].copy(
-                    running = false, failed = event.isError,
+                    running = false, stopping = false, failed = event.isError,
                     tokens = maxOf(subagents[si].tokens, subagentAcc[event.id] ?: 0))
 
                 // The transcript can be cleared underneath us by "+ new" while a turn streams,

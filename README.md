@@ -48,8 +48,11 @@ libraries), each credited with its license below.
 - **Code canvas** — fenced code blocks render as scrollable panels with a copy button
 - **Live file status per operation** — a row says what it actually did: `creating file · 84 lines
   written` → `file created · 212 lines`, or `file edited · +12 −3 lines`, `appended`, `file deleted`
-- **Live thinking markers** — a ticking clock, the effort level the turn is running at, and an
-  approximate reasoning-token count, so a long turn never reads as a hang
+- **Live turn marker** — never blank while a turn is in flight: `working…`, then
+  `thinking… ~N tokens` with a ticking clock and the effort level, then `responding… ~N tokens`
+  as output streams
+- **Per-agent stop** — spawned agents show a spinner while they run and a tick when they finish,
+  each with its own stop wired to the CLI's `stop_task`
 - **Markdown and LaTeX rendering** — headings, lists, tables, quotes, links and inline code, with
   maths in `$…$` / `$$…$$` / `\(…\)` form drawn as styled text (no WebView, no KaTeX)
 - **Permission prompts on the phone** — in any mode that asks, the tool call parks with its actual

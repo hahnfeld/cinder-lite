@@ -523,7 +523,7 @@ private fun ChatTab(vm: Session) {
     // without the transcript blinking out from under you.
     val searching = vm.searchOpen && vm.searchQuery.isNotBlank()
     val shown = if (searching) vm.searchHits else vm.transcript
-    LaunchedEffect(vm.transcript.size, vm.responding, searching) {
+    LaunchedEffect(vm.transcript.size, vm.busy, searching) {
         // Following the tail while reading results would fight the scroll on every new frame.
         if (!searching && vm.transcript.isNotEmpty()) {
             scope.launch { listState.animateScrollToItem(vm.transcript.size) }
@@ -542,7 +542,7 @@ private fun ChatTab(vm: Session) {
                 item { Text("no matches", color = Dim, fontFamily = mono, fontSize = 12.sp) }
             }
             items(shown) { TurnRow(it) }
-            if (vm.responding && !searching) item { RespondingMarker(vm.responseTokens) }
+            if (vm.busy && !searching) item { RespondingMarker(vm.liveLabel, vm.liveTokens) }
         }
         Composer(vm)
     }
@@ -597,7 +597,7 @@ private fun FindBar(vm: Session) {
  * token estimate that ticks up as each block lands.
  */
 @Composable
-private fun RespondingMarker(tokens: Int) {
+private fun RespondingMarker(label: String, tokens: Int) {
     val alpha by rememberInfiniteTransition(label = "pulse").animateFloat(
         initialValue = 0.35f, targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "pulse"
@@ -605,9 +605,12 @@ private fun RespondingMarker(tokens: Int) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("⏺", color = Orange, fontSize = 12.sp, modifier = Modifier.graphicsLayer { this.alpha = alpha })
         Spacer(Modifier.width(6.dp))
-        Text("responding…", color = Text0, fontFamily = mono, fontSize = 12.sp)
-        Spacer(Modifier.width(8.dp))
-        Text("~$tokens tokens", color = Dim, fontFamily = mono, fontSize = 11.sp)
+        Text("$label…", color = Text0, fontFamily = mono, fontSize = 12.sp)
+        // No figure until there is one to show: "~0 tokens" reads as a counter that has stuck.
+        if (tokens > 0) {
+            Spacer(Modifier.width(8.dp))
+            Text("~${fmtTok(tokens)} tokens", color = Dim, fontFamily = mono, fontSize = 11.sp)
+        }
     }
 }
 
@@ -1065,6 +1068,9 @@ private fun SubagentPanel(vm: Session) {
     val running = vm.subagents.count { it.running }
     val total = vm.subagentTokens
     val cap = 8
+    // Opens itself while agents are live, so the per-agent stop is in reach during the only
+    // window it can be used. Collapsing it by hand still sticks — this only forces the first one.
+    LaunchedEffect(running > 0) { if (running > 0) vm.subagentsOpen = true }
 
     Column(
         Modifier.fillMaxWidth().padding(bottom = 8.dp)
@@ -1083,6 +1089,8 @@ private fun SubagentPanel(vm: Session) {
                     append("${vm.subagents.size} subagent")
                     if (vm.subagents.size != 1) append("s")
                     if (running > 0) append(" · $running running")
+                    val stopping = vm.subagents.count { it.stopping }
+                    if (stopping > 0) append(" · $stopping stopping")
                     if (total > 0) append(" · ${fmtTok(total)} tokens")
                 },
                 color = if (running > 0) Purple else Dim, fontFamily = mono, fontSize = 10.sp,
@@ -1095,26 +1103,57 @@ private fun SubagentPanel(vm: Session) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                 vm.subagents.take(cap).forEach { a ->
                     Row(
-                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // A running agent has to *look* like it is running. A static glyph next
+                        // to a finished agent's tick reads as two kinds of done, which is what
+                        // made a whole panel of live agents look like a completed list.
+                        if (a.running) {
+                            var tick by remember(a.id) { mutableStateOf(0) }
+                            LaunchedEffect(a.id) {
+                                while (true) {
+                                    kotlinx.coroutines.delay(220)
+                                    tick++
+                                }
+                            }
+                            Text(
+                                "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[tick % 10].toString(),
+                                color = if (a.stopping) Dim else Purple,
+                                fontFamily = mono, fontSize = 10.sp
+                            )
+                        } else {
+                            Text(
+                                if (a.failed) "✕" else "✓",
+                                color = if (a.failed) Red else Green,
+                                fontFamily = mono, fontSize = 10.sp
+                            )
+                        }
                         Text(
-                            if (a.failed) "×" else if (a.running) "◆" else "✓",
-                            color = if (a.failed) Red else if (a.running) Purple else Green,
-                            fontFamily = mono, fontSize = 10.sp
-                        )
-                        Text(
-                            a.name, color = Text0, fontFamily = mono, fontSize = 10.sp,
-                            maxLines = 1,
+                            a.name, color = if (a.running) Text0 else Dim,
+                            fontFamily = mono, fontSize = 10.sp, maxLines = 1,
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
-                        Text(a.type, color = Dim, fontFamily = mono, fontSize = 9.sp, maxLines = 1)
+                        Text(
+                            if (a.stopping) "stopping" else a.type,
+                            color = Dim, fontFamily = mono, fontSize = 9.sp, maxLines = 1
+                        )
                         Text(
                             fmtTok(a.tokens), color = Dim, fontFamily = mono, fontSize = 9.sp,
                             maxLines = 1
                         )
+                        // Offered only while there is something to stop, and only once, so a
+                        // second tap can't read as "it didn't work, try again".
+                        if (a.running && !a.stopping) {
+                            Text(
+                                "stop", color = Red, fontFamily = mono, fontSize = 9.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(3.dp))
+                                    .clickable { vm.stopSubagent(a) }
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
                     }
                 }
                 if (vm.subagents.size > cap) {

@@ -226,7 +226,7 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
         stdin = BufferedWriter(OutputStreamWriter(p.outputStream))
         // Before anything is sent: the CLI decides how to settle permission prompts based on
         // whether a host announced itself, and it decides that at the first tool call.
-        if (promptsOverStdio) announceHost()
+        announceHost()
 
         // Both readers must swallow their own failures: destroying the process to start a new
         // session closes these streams mid-read, and an uncaught IOException inside a coroutine
@@ -268,7 +268,35 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             JSONObject()
                 .put("type", "control_request")
                 .put("request_id", "cinder-init")
-                .put("request", JSONObject().put("subtype", "initialize"))
+                .put(
+                    "request", JSONObject()
+                        .put("subtype", "initialize")
+                        // Declares that the UI has a per-agent stop control. Without it the CLI
+                        // treats an interrupt as the only way to stop a runaway background agent
+                        // and kills them all on one; with it, stop_task is available per task.
+                        .put("perTaskStopAffordance", true)
+                )
+        )
+    }
+
+    /**
+     * Asks the CLI to stop one background task.
+     *
+     * Note what this cannot tell you: the CLI answers `success` with an empty body whether or not
+     * anything was stopped — an id it has never seen gets the same reply as a real one. So the
+     * only honest signal that a stop worked is the agent's own result arriving afterwards, which
+     * is what the UI waits for rather than claiming success here.
+     */
+    fun stopTask(taskId: String) {
+        writeFrame(
+            JSONObject()
+                .put("type", "control_request")
+                .put("request_id", "cinder-stop-" + taskId.takeLast(12))
+                .put(
+                    "request", JSONObject()
+                        .put("subtype", "stop_task")
+                        .put("task_id", taskId)
+                )
         )
     }
 
@@ -319,6 +347,18 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
         process = null
     }
 
+    /**
+     * A string field, or null when the key is missing *or* explicitly JSON null.
+     *
+     * `optString` cannot be used for this. Android's org.json renders JSON null as the literal
+     * string "null", which is not blank and is not null — so a nullable field read that way is
+     * always "present". Every main-turn stream frame carries `parent_tool_use_id: null`, and
+     * reading it with optString made the parser treat the entire turn as a subagent's output and
+     * drop it: no deltas, no thinking marker, no token counts.
+     */
+    private fun JSONObject.strOrNull(key: String): String? =
+        if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
+
     /** Tolerant parser: unknown frames are ignored rather than crashing the stream. */
     private fun parse(line: String, onEvent: (Event) -> Unit) {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return
@@ -350,7 +390,7 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
                 val ev = json.optJSONObject("event") ?: return
                 // Frames from a spawned agent carry the id of the tool call that started it.
                 // They must not feed the main counters or the two turns' totals merge.
-                val parent = json.optString("parent_tool_use_id").takeIf { it.isNotBlank() }
+                val parent = json.strOrNull("parent_tool_use_id")
                 if (parent != null) {
                     if (ev.optString("type") == "content_block_delta") {
                         val d = ev.optJSONObject("delta")
@@ -395,10 +435,10 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
                     } ?: emptyList()
                     onEvent(
                         Event.Init(
-                            json.optString("model", null),
-                            json.optString("cwd", null),
+                            json.strOrNull("model"),
+                            json.strOrNull("cwd"),
                             tools,
-                            json.optString("session_id", null)
+                            json.strOrNull("session_id")
                         )
                     )
                 }
@@ -406,10 +446,10 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
                 // A background task finished and handed its result back to the model. status is
                 // completed | failed | stopped.
                 "task_notification" -> {
-                    val status = json.optString("status", "completed")
-                    val summary = json.optString("summary").ifBlank {
-                        json.optString("task_id").take(8).ifBlank { "background task" }
-                    }
+                    val status = json.strOrNull("status") ?: "completed"
+                    val summary = json.strOrNull("summary")
+                        ?: json.strOrNull("task_id")?.take(8)
+                        ?: "background task"
                     onEvent(
                         Event.Wake(
                             WakeKind.BackgroundTask,
@@ -421,11 +461,11 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
 
                 // A cron/scheduled task fired. `content` is the CLI's own render text.
                 "scheduled_task_fire" ->
-                    onEvent(Event.Wake(WakeKind.Scheduled, json.optString("content").trim()))
+                    onEvent(Event.Wake(WakeKind.Scheduled, json.strOrNull("content").orEmpty().trim()))
 
                 // The loop's own notification queue — the phone equivalent of the REPL's toasts.
                 "notification" -> {
-                    val text = json.optString("text").trim()
+                    val text = json.strOrNull("text").orEmpty().trim()
                     if (text.isNotEmpty()) {
                         onEvent(
                             Event.Wake(
@@ -440,7 +480,7 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
                     val meta = json.optJSONObject("compact_metadata")
                     onEvent(
                         Event.Compacted(
-                            meta?.optString("trigger", "auto") ?: "auto",
+                            meta?.strOrNull("trigger") ?: "auto",
                             meta?.optInt("pre_tokens", 0) ?: 0,
                             meta?.optInt("post_tokens", 0) ?: 0
                         )
@@ -449,6 +489,20 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             }
 
             "assistant" -> {
+                // A spawned agent's own messages come back tagged with the tool call that
+                // started it. They are not the main turn's answer: left unfiltered they were
+                // added to the transcript as if the model had said them, and their usage was
+                // counted against the main context window.
+                json.strOrNull("parent_tool_use_id")?.let { parent ->
+                    val text = json.optJSONObject("message")?.optJSONArray("content")?.let { c ->
+                        (0 until c.length()).mapNotNull { i ->
+                            c.optJSONObject(i)?.takeIf { it.optString("type") == "text" }
+                                ?.strOrNull("text")
+                        }.joinToString(" ")
+                    }.orEmpty()
+                    if (text.isNotEmpty()) onEvent(Event.SubagentDelta(parent, text))
+                    return
+                }
                 json.optJSONObject("message")?.optJSONObject("usage")?.let { u ->
                     // Cached reads still occupy the window, so they count the same as fresh input.
                     val used = u.optInt("input_tokens") +
@@ -496,7 +550,7 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
 
             "result" -> onEvent(
                 Event.Done(
-                    json.optString("subtype", "success"),
+                    json.strOrNull("subtype") ?: "success",
                     json.optDouble("total_cost_usd").takeIf { !it.isNaN() },
                     json.optLong("duration_ms").takeIf { it > 0 }
                 )
