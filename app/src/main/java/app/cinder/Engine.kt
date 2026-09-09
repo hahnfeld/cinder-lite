@@ -89,6 +89,11 @@ sealed interface Event {
      * attributed to one agent instead of pooled into the main response counter.
      */
     data class SubagentDelta(val parentId: String, val text: String) : Event
+    /**
+     * How much of the context window the last exchange occupied. Reported by the CLI on every
+     * assistant frame; without it a compaction is the first sign you were ever near the limit.
+     */
+    data class Usage(val tokens: Int) : Event
     /** The model called a tool: Read, Edit, Write, Bash, Glob, … */
     data class ToolCall(val id: String, val name: String, val input: JSONObject) : Event
     /** The result that came back for a tool call. */
@@ -108,6 +113,20 @@ sealed interface Event {
     data class Wake(val kind: WakeKind, val detail: String, val failed: Boolean = false) : Event
     /** The CLI dropped older context to stay inside the window. Silent until now. */
     data class Compacted(val trigger: String, val preTokens: Int, val postTokens: Int) : Event
+    /**
+     * The CLI is asking whether a tool may run, and the turn is parked until it gets an answer.
+     *
+     * Only ever arrives when the app has told the CLI it will answer — see [Engine.start]. In any
+     * other configuration a call that would prompt is denied on the spot and this never fires.
+     */
+    data class Permission(
+        val requestId: String,
+        val tool: String,
+        val display: String,
+        val description: String,
+        val input: JSONObject
+    ) : Event
+
     /** Anything the bridge itself needs to say — startup, crashes. */
     data class Notice(val text: String, val isError: Boolean = false) : Event
     /** A stderr line from the engine — shown for visibility, but never ends the turn. */
@@ -120,8 +139,17 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
     private var stdin: BufferedWriter? = null
     val running get() = process?.isAlive == true
 
-    /** "bypassPermissions" (the sandbox default) or "acceptEdits" for edits-only. */
+    /** One of the CLI's own modes: manual, acceptEdits, auto, dontAsk, bypassPermissions, plan. */
     var permissionMode: String = "bypassPermissions"
+
+    /**
+     * Whether this CLI build can route permission prompts to us over stdio.
+     *
+     * Set from a probe rather than assumed: an older binary rejects the flag outright ("unknown
+     * option"), and since the flag is passed at launch that would leave the engine unable to
+     * start at all rather than merely unable to prompt.
+     */
+    var promptsOverStdio: Boolean = false
 
     /** Model id handed to --model; empty means the CLI's own default. */
     var model: String = "claude-sonnet-5"
@@ -141,7 +169,7 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
     fun start(onEvent: (Event) -> Unit) {
         if (running) return
         if (!sandbox.engineReady) {
-            onEvent(Event.Notice("Engine not installed — see Setup", isError = true))
+            onEvent(Event.Notice("Engine not installed — see settings", isError = true))
             return
         }
         val inner = buildString {
@@ -162,6 +190,10 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             // Note there's no --dangerously-skip-permissions here: the CLI rejects that flag
             // outright when it detects root, and it adds nothing over the permission mode.
             append("--permission-mode $permissionMode ")
+            // Without this the CLI has nobody to ask, so anything the mode doesn't already cover
+            // is auto-denied — which is what made acceptEdits look broken: every Bash call came
+            // back "you haven't granted it yet" with no way to grant it.
+            if (promptsOverStdio) append("--permission-prompt-tool stdio ")
             if (model.isNotBlank()) append("--model $model ")
             if (effort.isNotBlank()) append("--effort $effort ")
             resumeId?.let { append("--resume $it ") }
@@ -192,6 +224,9 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
         }
         process = p
         stdin = BufferedWriter(OutputStreamWriter(p.outputStream))
+        // Before anything is sent: the CLI decides how to settle permission prompts based on
+        // whether a host announced itself, and it decides that at the first tool call.
+        if (promptsOverStdio) announceHost()
 
         // Both readers must swallow their own failures: destroying the process to start a new
         // session closes these streams mid-read, and an uncaught IOException inside a coroutine
@@ -222,6 +257,46 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Tells the CLI a host is present on the other end of stdin.
+     *
+     * Sent immediately after launch. Without it the CLI treats the stream as write-only and
+     * settles anything that would prompt by itself — the flag alone is not enough.
+     */
+    private fun announceHost() {
+        writeFrame(
+            JSONObject()
+                .put("type", "control_request")
+                .put("request_id", "cinder-init")
+                .put("request", JSONObject().put("subtype", "initialize"))
+        )
+    }
+
+    /**
+     * Answers a parked [Event.Permission]. The turn resumes the moment this lands, so an
+     * unanswered request stalls it indefinitely — every path that raises one must reach here.
+     */
+    fun answerPermission(requestId: String, allow: Boolean, input: JSONObject, why: String = "") {
+        val decision = JSONObject().put("behavior", if (allow) "allow" else "deny")
+        if (allow) decision.put("updatedInput", input)
+        else decision.put("message", why.ifBlank { "Denied from the phone." })
+        writeFrame(
+            JSONObject().put("type", "control_response").put(
+                "response", JSONObject()
+                    .put("subtype", "success")
+                    .put("request_id", requestId)
+                    .put("response", decision)
+            )
+        )
+    }
+
+    private fun writeFrame(frame: JSONObject) {
+        val w = stdin ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching { w.write(frame.toString()); w.write("\n"); w.flush() }
+        }
+    }
+
     fun send(text: String) {
         val w = stdin ?: return
         val msg = JSONObject()
@@ -248,6 +323,26 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
     private fun parse(line: String, onEvent: (Event) -> Unit) {
         val json = runCatching { JSONObject(line) }.getOrNull() ?: return
         when (json.optString("type")) {
+            // The CLI asking permission for a tool call. It is blocked until answered.
+            "control_request" -> {
+                val req = json.optJSONObject("request") ?: return
+                if (req.optString("subtype") != "can_use_tool") return
+                val id = json.optString("request_id").takeIf { it.isNotBlank() } ?: return
+                val tool = req.optString("tool_name")
+                onEvent(
+                    Event.Permission(
+                        requestId = id,
+                        tool = tool,
+                        display = req.optString("display_name").ifBlank { tool },
+                        description = req.optString("description"),
+                        input = req.optJSONObject("input") ?: JSONObject()
+                    )
+                )
+            }
+
+            // The ack for our own initialize, and nothing else we act on.
+            "control_response" -> return
+
             // Partial-message frames: a stream of Anthropic SSE events. We only want the text and
             // thinking deltas, purely to drive the live token counter — the transcript still uses
             // the complete assistant message that arrives at the end of the block.
@@ -354,6 +449,14 @@ class Engine(private val sandbox: Sandbox, private val scope: CoroutineScope) {
             }
 
             "assistant" -> {
+                json.optJSONObject("message")?.optJSONObject("usage")?.let { u ->
+                    // Cached reads still occupy the window, so they count the same as fresh input.
+                    val used = u.optInt("input_tokens") +
+                        u.optInt("cache_read_input_tokens") +
+                        u.optInt("cache_creation_input_tokens") +
+                        u.optInt("output_tokens")
+                    if (used > 0) onEvent(Event.Usage(used))
+                }
                 val content = json.optJSONObject("message")?.optJSONArray("content") ?: return
                 for (i in 0 until content.length()) {
                     val block = content.optJSONObject(i) ?: continue

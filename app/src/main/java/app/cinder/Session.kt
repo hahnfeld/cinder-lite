@@ -1,6 +1,7 @@
 package app.cinder
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import android.system.Os
 import androidx.compose.runtime.getValue
@@ -14,6 +15,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import kotlin.properties.ReadWriteProperty
+import kotlin.reflect.KProperty
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.InputStream
@@ -66,6 +69,22 @@ sealed interface Turn {
 }
 
 /**
+ * Everything in a turn that a search should look at.
+ *
+ * Tool rows contribute their command and output as well as their name — searching a long session
+ * for a filename or an error string is the case that matters, and both of those live in the body.
+ */
+fun Turn.searchText(): String = when (this) {
+    is Turn.User -> text
+    is Turn.Assistant -> text
+    is Turn.Thinking -> text
+    is Turn.Notice -> text
+    is Turn.Link -> "$label $url"
+    is Turn.Done -> summary
+    is Turn.Tool -> listOfNotNull(name, headline, body, result).joinToString(" ")
+}
+
+/**
  * One spawned agent. [id] is the tool_use id of the Agent call that created it, which is how the
  * CLI tags the frames it produces.
  */
@@ -89,12 +108,23 @@ data class SessionRecord(
     val title: String,
     val updated: Long,
     val model: String,
-    val turns: List<Pair<String, String>>
+    val turns: List<Pair<String, String>>,
+    /** Context this conversation had reached, so reopening it doesn't show another one's total. */
+    val tokens: Int = 0
 )
 
 private const val BUNDLE_VERSION = 1
 
 class Session(app: Application) : AndroidViewModel(app) {
+
+    /**
+     * The handful of preferences worth surviving a restart.
+     *
+     * A settings screen that forgets what you set it to is worse than no settings screen, and
+     * this is small enough that SharedPreferences is the whole of the story — no datastore, no
+     * serialisation, no migration.
+     */
+    private val prefs = app.getSharedPreferences("cinder", Context.MODE_PRIVATE)
 
     val sandbox = Sandbox(app)
     private val engine = Engine(sandbox, viewModelScope)
@@ -313,6 +343,10 @@ class Session(app: Application) : AndroidViewModel(app) {
     fun send(userText: String) {
         if (userText.isBlank() && attachments.isEmpty()) return
         transcript.add(Turn.User(userText))
+        // Kept verbatim — before the ultracode keyword and the attachment preamble are folded in
+        // — because that is what the user would expect back in the box if they pull it back.
+        lastPrompt = userText
+        lastTurnFailed = false
 
         // Ultracode is opted into per-prompt by keyword, so it rides along with the text rather
         // than being configured once at launch — which is also why a single turn can opt back
@@ -346,13 +380,14 @@ class Session(app: Application) : AndroidViewModel(app) {
         if (!sandbox.engineReady) {
             transcript.add(
                 Turn.Notice(
-                    "The engine isn't installed yet — open Setup. The sandbox and terminal work now.",
+                    "The engine isn't installed yet — open settings. The sandbox and terminal work now.",
                     isError = true
                 )
             )
             return
         }
         busy = true
+        holdProcess(true, "sending…")
         // A turn the user typed is not a wake-up, so any armed reason stops applying — otherwise
         // an engine restart on this message would be labelled as the loop firing. The model
         // re-arms with its next ScheduleWakeup call.
@@ -421,7 +456,8 @@ class Session(app: Application) : AndroidViewModel(app) {
                         o.optString("model"),
                         (0 until (turns?.length() ?: 0)).mapNotNull { k ->
                             turns?.optJSONObject(k)?.let { t -> t.optString("k") to t.optString("x") }
-                        }
+                        },
+                        o.optInt("tokens")
                     )
                 }
             }.sortedByDescending { it.updated }
@@ -449,7 +485,8 @@ class Session(app: Application) : AndroidViewModel(app) {
                 r.turns.forEach { (k, x) -> turnArr.put(JSONObject().put("k", k).put("x", x)) }
                 arr.put(
                     JSONObject().put("id", r.id).put("title", r.title)
-                        .put("updated", r.updated).put("model", r.model).put("turns", turnArr)
+                        .put("updated", r.updated).put("model", r.model)
+                        .put("tokens", r.tokens).put("turns", turnArr)
                 )
             }
             historyFile.writeText(JSONObject().put("sessions", arr).toString())
@@ -470,7 +507,7 @@ class Session(app: Application) : AndroidViewModel(app) {
                 else -> null
             }
         }
-        val record = SessionRecord(id, title, System.currentTimeMillis(), model, turns)
+        val record = SessionRecord(id, title, System.currentTimeMillis(), model, turns, contextTokens)
         history = (listOf(record) + history.filterNot { it.id == id }).take(50)
         persistHistory()
     }
@@ -483,10 +520,14 @@ class Session(app: Application) : AndroidViewModel(app) {
         if (loginActive) cancelLogin()
         saveCurrent()
         engine.stop()
+        clearAsks()
         engine.resumeId = null
         currentId = null
         transcript.clear()
         subagents.clear(); subagentAcc.clear(); subagentShown.clear()
+        // A new conversation starts with an empty context. Carrying the old count over made the
+        // marker read as though the fresh session had inherited the last one's history.
+        contextTokens = 0
         busy = false
         status = "idle"
         initSeen = false
@@ -498,6 +539,7 @@ class Session(app: Application) : AndroidViewModel(app) {
     fun openSession(record: SessionRecord) {
         saveCurrent()
         engine.stop()
+        clearAsks()
         transcript.clear()
         record.turns.forEach { (kind, text) ->
             transcript.add(
@@ -510,10 +552,18 @@ class Session(app: Application) : AndroidViewModel(app) {
         }
         currentId = record.id
         engine.resumeId = record.id
+        // Each conversation has its own context. The stored figure is what this one had reached;
+        // the first reply after resuming replaces it with the CLI's own count.
+        contextTokens = record.tokens
         initSeen = false
         wakeArmed = null
         wakeExplained = false
-        if (record.model.isNotBlank()) { model = record.model; engine.model = record.model }
+        if (record.model.isNotBlank()) {
+            model = record.model
+            engine.model = record.model
+            contextWindow = 0
+            probeEngineCapabilities()
+        }
         busy = false
         status = "resumed"
         transcript.add(Turn.Notice("resumed session ${record.id.take(8)}"))
@@ -552,17 +602,72 @@ class Session(app: Application) : AndroidViewModel(app) {
         pendingSend?.cancel()          // a first message still waiting on the toolchain install
         pendingSend = null
         engine.stop()
+        clearAsks()
         settleThinking()
+        holdProcess(false)
         busy = false
         responding = false
         status = "stopped"
+        lastTurnFailed = true
         transcript.add(Turn.Notice("Interrupted"))
+    }
+
+    /** True while the find bar is open over the transcript. */
+    var searchOpen by mutableStateOf(false)
+
+    /** What to look for. Empty means the transcript is shown whole. */
+    var searchQuery by mutableStateOf("")
+
+    /** Turns matching the current query, in order. Empty query matches nothing rather than all. */
+    val searchHits: List<Turn>
+        get() = if (searchQuery.isBlank()) emptyList()
+        else transcript.filter { it.searchText().contains(searchQuery, ignoreCase = true) }
+
+    fun closeSearch() {
+        searchOpen = false
+        searchQuery = ""
+    }
+
+    /**
+     * The last message the user typed, kept so a turn that died on the way out can be sent again
+     * without retyping it.
+     *
+     * Resending is not regeneration: the CLI has already committed the failed exchange to the
+     * conversation, so this adds a new turn rather than replacing one. That is the honest thing
+     * for it to do, and it is the case that actually matters — a turn lost to a killed process
+     * or a dropped connection, not a reply the user merely disliked.
+     */
+    var lastPrompt by mutableStateOf<String?>(null)
+        private set
+
+    /** True when the last turn ended badly, which is when offering to send it again is useful. */
+    var lastTurnFailed by mutableStateOf(false)
+        private set
+
+    /** Sends the last message again. */
+    fun resendLast() {
+        val text = lastPrompt ?: return
+        if (busy) return
+        send(text)
+    }
+
+    /** Waves off the offer to send a failed turn again, without forgetting the message itself. */
+    fun dismissRetry() {
+        lastTurnFailed = false
+    }
+
+    /** Hands the last message back for editing, and forgets it so the button stops offering. */
+    fun takeLastForEdit(): String? {
+        val text = lastPrompt ?: return null
+        lastPrompt = null
+        lastTurnFailed = false
+        return text
     }
 
     /** Commands the app answers itself, before anything reaches the model. Returns true if handled. */
     private fun slashCommand(text: String): Boolean {
         val parts = text.split(" ")
-        return when (parts[0]) {
+        return when (val cmd = parts[0]) {
             "/login" -> {
                 login(console = parts.getOrNull(1) == "--console"); true
             }
@@ -572,19 +677,225 @@ class Session(app: Application) : AndroidViewModel(app) {
             "/status" -> {
                 runShellIntoTranscript("/usr/local/bin/claude auth status"); true
             }
-            "/help" -> {
-                transcript.add(
-                    Turn.Notice(
-                        "/login — sign in to your Anthropic account\n" +
-                            "/logout — sign out\n" +
-                            "/status — show who's signed in\n" +
-                            "anything else goes to Claude Code"
-                    )
-                )
-                true
+            // These three are real CLI *subcommands*, not in-session slash commands — they only
+            // do anything as `claude <name>`, so they run in the sandbox and report back here.
+            "/doctor", "/mcp", "/agents" -> {
+                runShellIntoTranscript("/usr/local/bin/claude " + cmd.removePrefix("/")); true
             }
+            // Forwarded, not answered here: the CLI's own table is far better than a one-line
+            // summary, and reading its reply is how the app learns the real window.
+            "/context" -> false
+            "/clear" -> {
+                newSession(); true
+            }
+            "/help" -> {
+                transcript.add(Turn.Notice(HELP)); true
+            }
+            // Anything else beginning with a slash is one of the CLI's own in-session commands
+            // (/compact, /init, /cost, /memory, /export, project commands). The CLI reads those
+            // straight out of the prompt, so passing them through is more correct — and stays
+            // correct as the CLI gains new ones — than reimplementing a list here.
             else -> false
         }
+    }
+
+    private val HELP = """
+        /login - sign in to your Anthropic account
+        /logout - sign out
+        /status - show who is signed in
+        /clear - start a fresh session
+        /context - how full the context window is
+        /doctor /mcp /agents - run the CLI subcommand
+        anything else, slash commands included, goes to Claude Code
+    """.trimIndent()
+
+    /** Context consumed by the current conversation, from the CLI's own usage figures. */
+    var contextTokens by mutableStateOf(0)
+        private set
+
+    /**
+     * The model's real context window, in tokens. Zero means we don't know it yet.
+     *
+     * It is deliberately never guessed. Assuming 200k was wrong by a factor of five for Opus 5,
+     * which reports a 1m window — and a percentage computed against the wrong denominator is
+     * worse than no percentage at all. The number comes from the CLI's own `/context`, which is
+     * the same figure it compacts against.
+     */
+    var contextWindow by mutableStateOf(0)
+        private set
+
+    /** Windows already learned, keyed by model, so the probe runs once per model ever. */
+    private fun cachedWindow(m: String) = prefs.getInt("ctxwin:$m", 0)
+
+    /**
+     * Reads a token figure the way `/context` prints one: "27.8k", "1m", "512".
+     * Returns null for anything that isn't one, so a stray line can't set a bogus window.
+     */
+    private fun tokenCount(raw: String): Int? {
+        val s = raw.trim().lowercase()
+        val mult = when {
+            s.endsWith("k") -> 1_000
+            s.endsWith("m") -> 1_000_000
+            else -> 1
+        }
+        val n = (if (mult == 1) s else s.dropLast(1)).toDoubleOrNull() ?: return null
+        val total = n * mult
+        return if (total >= 1_000 && total <= 100_000_000) total.toInt() else null
+    }
+
+    /**
+     * Picks the real window out of anything the CLI prints, so typing `/context` teaches the app
+     * the number for free. The line looks like:
+     *
+     *     **Tokens:** 27.8k / 1m (3%)
+     */
+    private fun learnContextWindow(text: String) {
+        val marker = "**Tokens:**"
+        val at = text.indexOf(marker)
+        if (at < 0) return
+        val line = text.substring(at + marker.length).lineSequence().firstOrNull() ?: return
+        val parts = line.split("/")
+        if (parts.size < 2) return
+        val window = tokenCount(parts[1].substringBefore("(")) ?: return
+        tokenCount(parts[0])?.let { if (it > contextTokens) contextTokens = it }
+        rememberWindow(window)
+    }
+
+    private fun rememberWindow(window: Int) {
+        contextWindow = window
+        if (model.isNotBlank()) prefs.edit().putInt("ctxwin:$model", window).apply()
+    }
+
+    /**
+     * First safe moment to ask the engine about itself.
+     *
+     * Not init{}: Kotlin runs property initializers in declaration order, and the probe reads
+     * `model`, which is declared further down — its state object doesn't exist yet.
+     */
+    fun warmUp() {
+        engine.promptsOverStdio = promptsSupported
+        // The engine is constructed with its own default; a mode restored from disk has to be
+        // pushed into it or the setting would silently not apply until it was changed again.
+        engine.permissionMode = permissionMode
+        if (contextWindow == 0 || !probedOnce) {
+            probedOnce = true
+            probeEngineCapabilities()
+        }
+    }
+
+    private var probedOnce = false
+
+    // ---------------- permissions ----------------
+
+    /**
+     * A tool call the CLI has parked, waiting to be told whether it may run.
+     *
+     * [summary] is what the row shows: the command for a Bash call, the path for a file one. The
+     * tool's own input is the only honest source for that — a generic "Bash wants to run" tells
+     * you nothing about whether to allow it.
+     */
+    data class Ask(
+        val requestId: String,
+        val tool: String,
+        val display: String,
+        val summary: String,
+        val input: JSONObject
+    )
+
+    /**
+     * Requests waiting on an answer, oldest first.
+     *
+     * A queue rather than a single slot because a turn can park several at once, and every one of
+     * them holds the turn until it is answered.
+     */
+    val asks = mutableStateListOf<Ask>()
+
+    /** Whether this CLI build can hand permission prompts to the app. Learned, never assumed. */
+    var promptsSupported by mutableStateOf(prefs.getBoolean("promptsStdio", false))
+        private set
+
+    private fun summarize(tool: String, input: JSONObject): String = when (tool) {
+        "Bash", "PowerShell" -> input.optString("command")
+        "Read", "Write", "Edit", "NotebookEdit" -> input.optString("file_path")
+        "Glob", "Grep" -> listOf(input.optString("pattern"), input.optString("path"))
+            .filter { it.isNotBlank() }.joinToString("  ")
+        "WebFetch", "WebSearch" -> input.optString("url").ifBlank { input.optString("query") }
+        "Task", "Agent" -> input.optString("description")
+        else -> ""
+    }.ifBlank {
+        // Unknown tool: show the input rather than nothing, trimmed to something readable.
+        input.toString().take(300)
+    }
+
+    fun answerAsk(ask: Ask, allow: Boolean) {
+        asks.remove(ask)
+        engine.answerPermission(ask.requestId, allow, ask.input)
+        transcript.add(
+            Turn.Notice(
+                if (allow) "allowed ${ask.display}" else "denied ${ask.display}",
+                isError = !allow
+            )
+        )
+    }
+
+    /** Answers everything outstanding at once, for a turn with a run of similar calls. */
+    fun answerAllAsks(allow: Boolean) {
+        asks.toList().forEach { answerAsk(it, allow) }
+    }
+
+    /**
+     * Drops parked requests without answering.
+     *
+     * Only for when the process behind them is gone: an answer written to a dead stdin goes
+     * nowhere, and leaving the rows up would offer a choice that can no longer have an effect.
+     */
+    private fun clearAsks() = asks.clear()
+
+    /**
+     * Works out whether this CLI can hand us permission prompts, and what the model's real
+     * context window is, in one go.
+     *
+     * Both answers come from the same free call. `/context` is answered synthetically — no
+     * request leaves the device and the result frame reports zero cost — and it exercises the
+     * full flag parser, so a build too old for --permission-prompt-tool fails it with "unknown
+     * option" instead of taking the engine down at launch, where the flag would otherwise first
+     * be seen.
+     */
+    private fun probeEngineCapabilities() {
+        val m = model
+        cachedWindow(m).takeIf { it > 0 }?.let { contextWindow = it }
+        if (!sandbox.engineReady || probing) return
+        probing = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val withFlag = capture(
+                "/usr/local/bin/claude --print --permission-prompt-tool stdio --model $m '/context'"
+            )
+            val supported = !withFlag.contains("unknown option")
+            val out = if (supported) withFlag else capture(
+                "/usr/local/bin/claude --print --model $m '/context'"
+            )
+            viewModelScope.launch(Dispatchers.Main) {
+                probing = false
+                promptsSupported = supported
+                engine.promptsOverStdio = supported
+                prefs.edit().putBoolean("promptsStdio", supported).apply()
+                if (model == m) learnContextWindow(out)
+            }
+        }
+    }
+
+    private var probing = false
+
+    /**
+     * Raise the process's importance for the duration of a turn.
+     *
+     * The CLI is a child of this process, so a backgrounded app being frozen or reclaimed takes
+     * the running turn with it — which would also make the "finished" notification a promise the
+     * app cannot keep.
+     */
+    private fun holdProcess(on: Boolean, what: String = "working…") {
+        val ctx = getApplication<Application>()
+        runCatching { if (on) EngineService.start(ctx, what) else EngineService.stop(ctx) }
     }
 
     /**
@@ -595,8 +906,34 @@ class Session(app: Application) : AndroidViewModel(app) {
      */
     var foreground by mutableStateOf(true)
 
-    /** Off by default: a notification per turn is noise if you sit in the app. */
-    var notifyOnDone by mutableStateOf(true)
+    /**
+     * A preference that writes itself through to disk on assignment.
+     *
+     * The alternative — a plain state property plus a setter function beside it — clashes on the
+     * JVM, since Kotlin already generates a setter of that name. This keeps the call sites as
+     * plain assignments and puts the persistence where it belongs.
+     */
+    private fun pref(key: String, default: Boolean): ReadWriteProperty<Any?, Boolean> {
+        val state = mutableStateOf(prefs.getBoolean(key, default))
+        return object : ReadWriteProperty<Any?, Boolean> {
+            override fun getValue(thisRef: Any?, property: KProperty<*>) = state.value
+            override fun setValue(thisRef: Any?, property: KProperty<*>, value: Boolean) {
+                state.value = value
+                prefs.edit().putBoolean(key, value).apply()
+            }
+        }
+    }
+
+    /** Buzz the phone when a turn lands — only ever while the app is in the background. */
+    var notifyOnDone by pref("notifyOnDone", true)
+
+    /**
+     * Whether dictated speech is sent the moment the recognizer hands it back.
+     *
+     * Off by default: speech recognition mishears, and a prompt that sends itself gives you no
+     * chance to catch it. On, it makes the mic a proper hands-free path — speak and it goes.
+     */
+    var autoSendVoice by pref("autoSendVoice", false)
 
     /**
      * Ping the phone that a turn ended. Reuses the agent-ping channel and receiver rather than
@@ -667,7 +1004,7 @@ class Session(app: Application) : AndroidViewModel(app) {
     fun updateCli() {
         if (updating) return
         if (!sandbox.engineReady) {
-            transcript.add(Turn.Notice("engine not installed yet — see Setup", isError = true)); return
+            transcript.add(Turn.Notice("engine not installed yet — see settings", isError = true)); return
         }
         updating = true
         transcript.add(Turn.Notice("checking for a newer claude CLI…"))
@@ -689,6 +1026,9 @@ class Session(app: Application) : AndroidViewModel(app) {
                         // --model/--effort and the binary itself are all read at launch, so the
                         // running process is still the old build until it is restarted.
                         engine.stop()
+                        clearAsks()
+                        probedOnce = false
+                        warmUp()
                         transcript.add(Turn.Notice("engine restarted on the new build"))
                     }
                 }
@@ -755,6 +1095,7 @@ class Session(app: Application) : AndroidViewModel(app) {
                 // Deltas already counted the text live; only count here if partial streaming isn't
                 // giving us deltas, so the number still lands on the final block.
                 if (!sawDelta) { responseChars += event.text.length; responseTokens = responseChars / 4 }
+                learnContextWindow(event.text)
                 transcript.add(Turn.Assistant(event.text))
             }
 
@@ -803,6 +1144,16 @@ class Session(app: Application) : AndroidViewModel(app) {
                         transcript[transcript.lastIndex] = last.copy(tokens = thinkingAcc)
                     }
                 }
+            }
+
+            is Event.Usage -> {
+                // Monotonic within a session: the window only grows until a compaction, and a
+                // subagent's smaller frame must not make the main context look like it shrank.
+                if (event.tokens > contextTokens) contextTokens = event.tokens
+                // The first real usage figure is the first moment a denominator is worth having.
+                // It can't be fetched from init{}: that runs before `model` is declared, so its
+                // state object doesn't exist yet.
+                if (contextWindow == 0) probeEngineCapabilities()
             }
 
             is Event.SubagentDelta -> {
@@ -928,12 +1279,14 @@ class Session(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 settleThinking()
+                holdProcess(false)
                 busy = false
                 responding = false
                 status = "idle"
                 saveCurrent()   // a completed turn is worth keeping
                 val cost = event.costUsd?.let { "$%.4f".format(it) }
                 val secs = event.durationMs?.let { "%.1fs".format(it / 1000.0) }
+                lastTurnFailed = event.subtype != null && event.subtype != "success"
                 val summary = listOfNotNull(event.subtype, secs, cost).joinToString(" · ")
                 transcript.add(Turn.Done(summary))
                 // Only when the user has actually looked away — otherwise every reply buzzes
@@ -968,11 +1321,27 @@ class Session(app: Application) : AndroidViewModel(app) {
             }
 
             is Event.Compacted -> {
+                contextTokens = event.postTokens
                 val post = event.postTokens.takeIf { it > 0 }
                 transcript.add(
                     Turn.Notice(
                         "context compacted (${event.trigger})" +
                             if (post != null) " · ${event.preTokens} → $post tokens" else ""
+                    )
+                )
+            }
+
+            is Event.Permission -> {
+                // The turn is parked until this is answered, so the app must look busy and the
+                // row must be impossible to miss.
+                busy = true
+                asks.add(
+                    Ask(
+                        requestId = event.requestId,
+                        tool = event.tool,
+                        display = event.display,
+                        summary = event.description.ifBlank { summarize(event.tool, event.input) },
+                        input = event.input
                     )
                 )
             }
@@ -1661,7 +2030,9 @@ class Session(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    var permissionMode by mutableStateOf("bypassPermissions")
+    var permissionMode by mutableStateOf(
+        prefs.getString("permissionMode", null) ?: "bypassPermissions"
+    )
         private set
 
     /**
@@ -1722,6 +2093,9 @@ class Session(app: Application) : AndroidViewModel(app) {
         model = m
         engine.model = m
         engine.stop()   // --model is fixed at launch, so the next turn needs a fresh process
+        // A different model is a different window, and the old one would misreport how full it is.
+        contextWindow = 0
+        probeEngineCapabilities()
         transcript.add(Turn.Notice("model: $m (new session)"))
     }
 
@@ -1808,11 +2182,19 @@ class Session(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** The CLI's own modes, in order of how much they let through. */
+    val permissionModes = listOf(
+        "plan", "manual", "acceptEdits", "auto", "dontAsk", "bypassPermissions"
+    )
+
     fun choosePermissionMode(mode: String) {
+        if (mode !in permissionModes) return
         permissionMode = mode
         engine.permissionMode = mode
         engine.stop()   // the flag is set at launch, so the next turn starts a fresh CLI
-        log("permission mode: $mode (engine will restart)")
+        clearAsks()
+        prefs.edit().putString("permissionMode", mode).apply()
+        transcript.add(Turn.Notice("permission mode: $mode (new session)"))
     }
 
     /**

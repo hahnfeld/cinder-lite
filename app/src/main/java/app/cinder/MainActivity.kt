@@ -1,7 +1,9 @@
 package app.cinder
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -29,7 +31,10 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontFamily
@@ -38,19 +43,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-// Cinder's palette: near-black ground, an ember accent, muted chrome.
-private val Ink = Color(0xFF15130F)
-private val Panel = Color(0xFF1D1A15)
-private val Line = Color(0xFF2E2A23)
-private val Text0 = Color(0xFFE8E3D9)
-private val Dim = Color(0xFF8A8377)
-private val Orange = Color(0xFFE0603A)   // ember
-private val Green = Color(0xFF7FB069)
-private val Red = Color(0xFFD9534F)
-private val Blue = Color(0xFF6C9BD1)
-private val Purple = Color(0xFFBD93F9)  // ultracode
-
-private val mono = FontFamily.Monospace
 
 class MainActivity : ComponentActivity() {
     private val vm: Session by viewModels()
@@ -88,6 +80,9 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         vm.foreground = true
+        // Asks the engine what it can do. Can't happen while the view model is being built —
+        // the probe reads state declared after the constructor runs.
+        vm.warmUp()
     }
 
     override fun onStop() {
@@ -96,7 +91,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab(val label: String) { Chat("chat"), Terminal("shell"), Setup("setup") }
+private enum class Tab(val label: String) { Chat("chat"), Terminal("shell"), Settings("settings") }
 
 /** Lets deep composables (the file chips) reach the session without threading it through. */
 private val LocalSession = compositionLocalOf<Session?> { null }
@@ -130,7 +125,7 @@ private fun Root(vm: Session) {
                     when (tab) {
                         Tab.Chat -> ChatTab(vm)
                         Tab.Terminal -> TerminalTab(vm)
-                        Tab.Setup -> SetupTab(vm)
+                        Tab.Settings -> SettingsTab(vm)
                     }
                     // HTML preview rides above the current tab so it can be opened from anywhere.
                     vm.previewFile?.let { HtmlPreview(it) { vm.closePreview() } }
@@ -263,6 +258,29 @@ private fun Header(vm: Session, tab: Tab, onMenu: () -> Unit, onTab: (Tab) -> Un
                 color = Dim, fontSize = 10.sp, fontFamily = mono, maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
+            )
+            // Nothing before the first turn reports usage, and no denominator until the CLI
+            // has told us the real one — a percentage of a guessed window is worse than none.
+            if (vm.contextTokens > 0) {
+                val pct = if (vm.contextWindow > 0) vm.contextTokens * 100 / vm.contextWindow else 0
+                Text(
+                    if (vm.contextWindow > 0) "${fmtTok(vm.contextTokens)}/${fmtTok(vm.contextWindow)}"
+                    else fmtTok(vm.contextTokens),
+                    color = when {
+                        pct >= 90 -> Red
+                        pct >= 75 -> Orange
+                        else -> Dim
+                    },
+                    fontSize = 10.sp, fontFamily = mono, maxLines = 1
+                )
+            }
+            Text(
+                "⌕", color = if (vm.searchOpen) Orange else Dim, fontSize = 14.sp,
+                modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                    .clickable {
+                        if (vm.searchOpen) vm.closeSearch() else { vm.searchOpen = true; onTab(Tab.Chat) }
+                    }
+                    .padding(horizontal = 5.dp, vertical = 1.dp)
             )
             EffortPicker(vm)
         }
@@ -472,21 +490,75 @@ private fun ModelPicker(vm: Session) {
 private fun ChatTab(vm: Session) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    LaunchedEffect(vm.transcript.size, vm.responding) {
-        if (vm.transcript.isNotEmpty()) scope.launch { listState.animateScrollToItem(vm.transcript.size) }
+    // A find with nothing typed yet still shows the whole conversation, so the bar can open
+    // without the transcript blinking out from under you.
+    val searching = vm.searchOpen && vm.searchQuery.isNotBlank()
+    val shown = if (searching) vm.searchHits else vm.transcript
+    LaunchedEffect(vm.transcript.size, vm.responding, searching) {
+        // Following the tail while reading results would fight the scroll on every new frame.
+        if (!searching && vm.transcript.isNotEmpty()) {
+            scope.launch { listState.animateScrollToItem(vm.transcript.size) }
+        }
     }
     Column(Modifier.fillMaxSize()) {
+        if (vm.searchOpen) FindBar(vm)
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (vm.transcript.isEmpty()) item { Welcome() }
-            items(vm.transcript) { TurnRow(it) }
-            if (vm.responding) item { RespondingMarker(vm.responseTokens) }
+            if (vm.transcript.isEmpty() && !searching) item { Welcome() }
+            if (searching && shown.isEmpty()) {
+                item { Text("no matches", color = Dim, fontFamily = mono, fontSize = 12.sp) }
+            }
+            items(shown) { TurnRow(it) }
+            if (vm.responding && !searching) item { RespondingMarker(vm.responseTokens) }
         }
         Composer(vm)
+    }
+}
+
+/**
+ * Find-in-conversation.
+ *
+ * A long session scrolls past the point of being able to find anything in it, and the turn you
+ * want is usually one you can name — a filename, an error, something you asked. Matching turns
+ * are shown in place of the transcript rather than highlighted within it: on a phone there is no
+ * room to do both, and the list of hits is the more useful of the two.
+ */
+@Composable
+private fun FindBar(vm: Session) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Row(
+        Modifier.fillMaxWidth().background(Panel).padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedTextField(
+            value = vm.searchQuery,
+            onValueChange = { vm.searchQuery = it },
+            modifier = Modifier.weight(1f).focusRequester(focus),
+            placeholder = { Text("find in conversation…", fontFamily = mono, fontSize = 12.sp, color = Dim) },
+            textStyle = androidx.compose.ui.text.TextStyle(color = Text0, fontSize = 13.sp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Orange, unfocusedBorderColor = Line, cursorColor = Orange
+            ),
+            shape = RoundedCornerShape(4.dp),
+            singleLine = true
+        )
+        if (vm.searchQuery.isNotBlank()) {
+            Text(
+                "${vm.searchHits.size}", color = Dim, fontFamily = mono, fontSize = 11.sp,
+                maxLines = 1
+            )
+        }
+        Text(
+            "×", color = Dim, fontFamily = mono, fontSize = 16.sp,
+            modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { vm.closeSearch() }
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        )
     }
 }
 
@@ -516,7 +588,7 @@ private fun Welcome() {
         Text("✦ Cinder — a mobile Claude Code client", color = Orange, fontFamily = mono, fontSize = 13.sp)
         Text(
             "This app carries its own sandbox: a private Linux workspace where files are created, " +
-                "edited and built. The shell tab works right now. The agent needs its engine — see setup.",
+                "edited and built. The shell tab works right now. The agent needs its engine — see settings.",
             color = Dim, fontSize = 12.sp, lineHeight = 18.sp
         )
     }
@@ -543,9 +615,7 @@ private fun TurnRow(turn: Turn) {
                             color = Orange, fontSize = 12.sp,
                             modifier = Modifier.padding(top = 3.dp)
                         )
-                        SelectionContainer {
-                            Text(part.text, color = Text0, fontSize = 13.sp, lineHeight = 20.sp)
-                        }
+                        Markdown(part.text)
                     }
 
                     is Part.Code -> CodeCanvas(part)
@@ -1030,8 +1100,14 @@ private fun SubagentPanel(vm: Session) {
     }
 }
 
-private fun fmtTok(n: Int): String =
-    if (n >= 1000) "%.1fk".format(n / 1000f) else n.toString()
+private fun fmtTok(n: Int): String = when {
+    n >= 1_000_000 -> {
+        val m = n / 1_000_000f
+        if (m % 1f == 0f) "${m.toInt()}m" else "%.1fm".format(m)
+    }
+    n >= 1_000 -> "%.1fk".format(n / 1000f)
+    else -> n.toString()
+}
 
 /**
  * Paints every occurrence of "ultracode" purple as you type.
@@ -1060,6 +1136,106 @@ private object UltracodeHighlight : androidx.compose.ui.text.input.VisualTransfo
     }
 }
 
+/**
+ * The tool call the CLI is waiting on.
+ *
+ * Sits directly above the composer because it is blocking: the turn does not move until it is
+ * answered, so it has to be the thing in front of you, not something to scroll back to. What it
+ * shows is the tool's actual input — the command, the path, the URL — since "Bash wants to run"
+ * is not enough to decide on.
+ */
+@Composable
+private fun AskCard(vm: Session) {
+    val ask = vm.asks.firstOrNull() ?: return
+    Column(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Orange.copy(alpha = .10f))
+            .border(1.dp, Orange.copy(alpha = .55f), RoundedCornerShape(6.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("⏸", color = Orange, fontSize = 12.sp)
+            Text(
+                "${ask.display} needs permission",
+                color = Orange, fontFamily = mono, fontSize = 11.sp,
+                maxLines = 1, modifier = Modifier.weight(1f)
+            )
+            if (vm.asks.size > 1) {
+                Text(
+                    "+${vm.asks.size - 1} more", color = Dim, fontFamily = mono, fontSize = 10.sp,
+                    maxLines = 1
+                )
+            }
+        }
+        if (ask.summary.isNotBlank()) {
+            Box(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(Ink)
+                    .border(1.dp, Line, RoundedCornerShape(4.dp))
+                    .horizontalScroll(rememberScrollState())
+                    .padding(8.dp)
+            ) {
+                SelectionContainer {
+                    Text(
+                        ask.summary, color = Text0, fontFamily = mono, fontSize = 11.sp,
+                        lineHeight = 15.sp, maxLines = 6
+                    )
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(
+                color = Ink,
+                shape = RoundedCornerShape(4.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Red.copy(alpha = .6f)),
+                onClick = { vm.answerAsk(ask, allow = false) },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    "deny", color = Red, fontFamily = mono, fontSize = 12.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                )
+            }
+            Surface(
+                color = Orange,
+                shape = RoundedCornerShape(4.dp),
+                onClick = { vm.answerAsk(ask, allow = true) },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    "allow", color = Ink, fontFamily = mono, fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                )
+            }
+        }
+        // Only worth offering once there's a queue: a run of similar calls is the case where
+        // answering them one at a time is the annoying part.
+        if (vm.asks.size > 1) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "deny all", color = Dim, fontFamily = mono, fontSize = 10.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(3.dp))
+                        .clickable { vm.answerAllAsks(allow = false) }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+                Text(
+                    "allow all ${vm.asks.size}", color = Dim, fontFamily = mono, fontSize = 10.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(3.dp))
+                        .clickable { vm.answerAllAsks(allow = true) }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun Composer(vm: Session) {
     var text by remember { mutableStateOf("") }
@@ -1068,6 +1244,31 @@ private fun Composer(vm: Session) {
     val typedUltra = remember(text) { text.contains("ultracode", ignoreCase = true) }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { vm.attachFile(it) }
+    }
+    // Dictation goes through the system recognizer rather than SpeechRecognizer: the intent form
+    // needs no RECORD_AUDIO of our own — the recognizer app holds the microphone — and it gives
+    // the familiar listening sheet instead of a bespoke one.
+    val ctx = LocalContext.current
+    val dictate = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        val heard = res.data
+            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            ?.firstOrNull()
+            ?: return@rememberLauncherForActivityResult
+        val next = if (text.isBlank()) heard else "$text $heard"
+        // Hands-free only if it was asked for: recognizers mishear, and a prompt that sends
+        // itself leaves no moment to catch it.
+        if (vm.autoSendVoice) {
+            vm.send(next)
+            text = ""
+        } else {
+            text = next
+        }
+    }
+    val canDictate = remember {
+        Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .resolveActivity(ctx.packageManager) != null
     }
     // navigationBarsPadding keeps it clear of the gesture bar; imePadding lifts it only while the
     // keyboard is up. Order matters — insets are consumed outermost first.
@@ -1097,6 +1298,7 @@ private fun Composer(vm: Session) {
                 }
             }
         }
+        AskCard(vm)
         SubagentPanel(vm)
 
         // Ultracode can spawn a lot of agents, so its state is never implicit: while it's on the
@@ -1131,6 +1333,43 @@ private fun Composer(vm: Session) {
                 )
             }
         }
+        // A turn that ended badly — interrupted, or a non-success result — usually wants to be
+        // tried again verbatim. It's an offer, not a state: × waves it off and leaves the
+        // conversation alone.
+        if (vm.lastTurnFailed && vm.lastPrompt != null && !vm.busy) {
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Red.copy(alpha = .12f))
+                    .border(1.dp, Red.copy(alpha = .45f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "that turn didn't finish", color = Red, fontFamily = mono, fontSize = 10.sp,
+                    maxLines = 1, modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "edit", color = Dim, fontFamily = mono, fontSize = 10.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(3.dp))
+                        .clickable { vm.takeLastForEdit()?.let { text = it } }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+                Text(
+                    "send again", color = Orange, fontFamily = mono, fontSize = 10.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(3.dp))
+                        .clickable { vm.resendLast() }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+                Text(
+                    "×", color = Dim, fontFamily = mono, fontSize = 13.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(3.dp))
+                        .clickable { vm.dismissRetry() }
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Surface(
                 color = Ink,
@@ -1161,6 +1400,30 @@ private fun Composer(vm: Session) {
                 shape = RoundedCornerShape(4.dp),
                 maxLines = 5
             )
+            if (canDictate && !vm.busy) {
+                Surface(
+                    color = Ink,
+                    shape = RoundedCornerShape(4.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Line),
+                    onClick = {
+                        runCatching {
+                            dictate.launch(
+                                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                                    .putExtra(
+                                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                                    )
+                                    .putExtra(RecognizerIntent.EXTRA_PROMPT, "speak your prompt")
+                            )
+                        }
+                    }
+                ) {
+                    Text(
+                        "🎤", fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                    )
+                }
+            }
             if (vm.busy) {
                 OutlinedButton(
                     onClick = { vm.interrupt() },
@@ -1242,192 +1505,378 @@ private fun TerminalTab(vm: Session) {
     }
 }
 
-// ---------------- setup ----------------
+// ---------------- settings ----------------
+
+/**
+ * One row on the settings screen: what it's called, what it does, and whatever operates it.
+ *
+ * [alias] carries words a search should match that the visible text doesn't contain — "mic" for
+ * dictation, "root" for the permission modes — so looking for the obvious word finds the setting
+ * even when the screen calls it something else.
+ */
+private class Pref(
+    val title: String,
+    val blurb: String = "",
+    val alias: String = "",
+    val control: (@Composable () -> Unit)? = null,
+    val below: (@Composable () -> Unit)? = null
+) {
+    fun matches(q: String): Boolean =
+        q.isBlank() || listOf(title, blurb, alias).any { it.contains(q, ignoreCase = true) }
+}
+
+private class PrefGroup(val name: String, val prefs: List<Pref>) {
+    /** A group whose own name matches keeps all of its rows: you searched for the group. */
+    fun filter(q: String): PrefGroup? {
+        if (q.isBlank() || name.contains(q, ignoreCase = true)) return this
+        val kept = prefs.filter { it.matches(q) }
+        return if (kept.isEmpty()) null else PrefGroup(name, kept)
+    }
+}
+
+/** The pill used for every on/off setting, so they all read the same way. */
+@Composable
+private fun Toggle(on: Boolean, onChange: (Boolean) -> Unit) {
+    Surface(
+        color = if (on) Green.copy(alpha = .13f) else Color.Transparent,
+        shape = RoundedCornerShape(20.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (on) Green.copy(alpha = .6f) else Line),
+        onClick = { onChange(!on) }
+    ) {
+        Text(
+            if (on) "on" else "off",
+            color = if (on) Green else Dim, fontFamily = mono, fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
+        )
+    }
+}
+
+/** A full-width action. [accent] marks the one thing a section is mainly for. */
+@Composable
+private fun Action(
+    label: String,
+    accent: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = enabled,
+        shape = RoundedCornerShape(6.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (accent) Orange else Ink,
+            contentColor = if (accent) Ink else Orange,
+            disabledContainerColor = Ink,
+            disabledContentColor = Dim
+        )
+    ) { Text(label, fontFamily = mono, fontSize = 12.sp, maxLines = 1) }
+}
+
+/**
+ * What each of the CLI's permission modes actually does, in the order the CLI lists them by how
+ * much they let through. Kept beside the picker rather than in the CLI's help text because the
+ * choice is meaningless without them — "auto" and "dontAsk" sound alike and are opposites.
+ */
+private val MODE_NOTES = listOf(
+    "plan" to "Reads and researches, writes nothing. Comes back with a plan instead of doing it.",
+    "manual" to "Asks before every tool call that isn't already allowed by a rule.",
+    "acceptEdits" to "File edits go through on their own; everything else asks.",
+    "auto" to "The CLI's classifier judges each call, and asks when it isn't confident.",
+    "dontAsk" to "Never asks. Anything a rule doesn't already allow is silently declined.",
+    "bypassPermissions" to "Allows everything. The workspace is app-private and disposable, " +
+        "which is why this is the default here."
+)
 
 @Composable
-private fun SetupTab(vm: Session) {
+private fun SettingsTab(vm: Session) {
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { vm.importBinary(it) }
     }
-    val pickRootfs = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        uri?.let { vm.importRootfs(it) }
-    }
+    var q by remember { mutableStateOf("") }
 
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-            .padding(14.dp).navigationBarsPadding(),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("account", color = Dim, fontFamily = mono, fontSize = 11.sp)
-            Spacer(Modifier.weight(1f))
-            Text(vm.authStatus, color = Dim, fontFamily = mono, fontSize = 10.sp, maxLines = 1)
-        }
-        Text(
-            "Sign in from the chat tab with /login — it runs the CLI's own OAuth on a terminal, " +
-                "opens the page in your browser, and takes the code back as a chat message.",
-            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
+    val groups = listOf(
+        PrefGroup("account", listOf(
+            Pref(
+                "signed in as",
+                alias = "login logout oauth auth anthropic account",
+                control = {
+                    Text(vm.authStatus, color = Dim, fontFamily = mono, fontSize = 10.sp, maxLines = 1)
+                }
+            ),
+            Pref(
+                "how to sign in",
+                "Type /login in chat. It runs the CLI's own OAuth on a real terminal, opens the " +
+                    "page in your browser, and takes the code back as a chat message.",
+                alias = "login signin sign in oauth"
+            )
+        )),
+        PrefGroup("chat", listOf(
+            Pref(
+                "notify when a turn ends",
+                "Buzzes the phone when a turn finishes — but only while the app is in the " +
+                    "background, so replies you're already reading stay silent. Long agent runs " +
+                    "are the point: send one, put the phone down, get told when it lands.",
+                alias = "notification buzz alert ping background",
+                control = { Toggle(vm.notifyOnDone) { vm.notifyOnDone = it } }
+            ),
+            Pref(
+                "send dictation automatically",
+                "With this on, speaking into the mic sends the message the moment the recognizer " +
+                    "is done — properly hands-free. Off, the words land in the box first so you " +
+                    "can fix anything it misheard.",
+                alias = "voice mic microphone speech dictate auto send hands free",
+                control = { Toggle(vm.autoSendVoice) { vm.autoSendVoice = it } }
+            )
+        )),
+        PrefGroup("permissions", listOf(
+            Pref(
+                "what the agent may do unasked",
+                "The CLI's own modes, from most cautious to least. Changing one starts a fresh " +
+                    "session: the mode is fixed when the process launches.",
+                alias = "root bypass accept edits sandbox allow permission mode plan manual auto",
+                below = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        MODE_NOTES.forEach { (mode, note) ->
+                            val on = vm.permissionMode == mode
+                            Surface(
+                                color = if (on) Orange.copy(alpha = .13f) else Ink,
+                                shape = RoundedCornerShape(6.dp),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp, if (on) Orange.copy(alpha = .7f) else Line
+                                ),
+                                onClick = { vm.choosePermissionMode(mode) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        if (on) "●" else "○",
+                                        color = if (on) Orange else Dim, fontSize = 11.sp,
+                                        modifier = Modifier.padding(top = 1.dp)
+                                    )
+                                    Column(
+                                        Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            mode, color = if (on) Orange else Text0,
+                                            fontFamily = mono, fontSize = 11.sp
+                                        )
+                                        Text(note, color = Dim, fontSize = 10.sp, lineHeight = 14.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            ),
+            Pref(
+                "answering prompts on the phone",
+                if (vm.promptsSupported)
+                    "This build can hand permission prompts to the app, so a mode that asks will " +
+                        "put an allow/deny card above the composer and hold the turn until you " +
+                        "answer it."
+                else
+                    "This CLI build can't hand permission prompts to the app, so a mode that asks " +
+                        "will simply decline what it can't decide by itself. Update the CLI from " +
+                        "the button next to the tabs, then reopen the app.",
+                alias = "prompt ask allow deny stdio dialog",
+                control = {
+                    Text(
+                        if (vm.promptsSupported) "supported" else "not available",
+                        color = if (vm.promptsSupported) Green else Dim,
+                        fontFamily = mono, fontSize = 10.sp, maxLines = 1
+                    )
+                }
+            )
+        )),
+        PrefGroup("engine", listOf(
+            Pref(
+                "what is installed",
+                alias = "runtime proot musl rootfs status claude binary engine",
+                below = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        vm.installs.forEach { i ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    if (i.present) "●" else "○",
+                                    color = if (i.present) Green else Dim, fontSize = 11.sp
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(i.label, color = Text0, fontSize = 12.sp, fontFamily = mono)
+                                    Text(i.detail, color = Dim, fontSize = 10.sp, lineHeight = 14.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            ),
+            Pref(
+                "download claude",
+                "proot, its loader, libtalloc and a musl rootfs ship inside this APK and install " +
+                    "themselves on first launch. Claude Code is not bundled — it is Anthropic's " +
+                    "binary, so this pulls it from npm and it logs in with its own OAuth. No API " +
+                    "key is stored here.",
+                alias = "engine npm install cli arm64 musl update",
+                below = { Action("download claude (arm64 musl)", accent = true) { vm.downloadEngine() } }
+            ),
+            Pref(
+                "shell and tools",
+                "bash, git and ripgrep inside the sandbox — what the agent reaches for constantly.",
+                alias = "bash git ripgrep apk alpine install posix",
+                below = { Action("install shell + tools") { vm.installTools() } }
+            ),
+            Pref(
+                "runtime",
+                "Reinstalls the bundled sandbox from scratch, or brings an outside binary into it.",
+                alias = "reinstall bootstrap import file binary repair",
+                below = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.weight(1f)) { Action("reinstall runtime") { vm.bootstrap(force = true) } }
+                        Box(Modifier.weight(1f)) { Action("import file") { pickFiles.launch(arrayOf("*/*")) } }
+                    }
+                }
+            )
+        )),
+        PrefGroup("toolchains", listOf(
+            Pref(
+                "android build tools",
+                "About 250 MB: aapt2, d8, apksigner, ecj and a JDK (Android-native aarch64 " +
+                    "builds), Google's android.jar for API 35, Gradle, plus clang/make for native " +
+                    "code. Downloaded rather than bundled — Google's SDK terms do not allow " +
+                    "shipping it inside this APK, and the NDK proper is x86-64 only, so clang is " +
+                    "the ARM stand-in.",
+                alias = "sdk gradle ndk aapt d8 apksigner jdk compile build",
+                below = {
+                    Action(
+                        if (vm.buildToolsInstalling) "downloading… watch the log below"
+                        else "install android build tools",
+                        enabled = !vm.buildToolsInstalling
+                    ) { vm.installBuildTools() }
+                }
+            ),
+            Pref(
+                "apk tools",
+                "Takes APKs apart: apktool for smali and resources, jadx for Java source, dex2jar, " +
+                    "plus aapt2/apksigner and a JDK. baksmali and smali are provided by apktool, " +
+                    "which is built on them. Around 200 MB, downloaded rather than bundled.",
+                alias = "apktool jadx dex2jar decompile smali reverse",
+                below = {
+                    Action(
+                        if (vm.apkToolsInstalling) "downloading… watch the log below"
+                        else "install apk tools",
+                        enabled = !vm.apkToolsInstalling
+                    ) { vm.installApkTools() }
+                }
+            )
+        )),
+        PrefGroup("diagnostics", listOf(
+            Pref(
+                "when something will not start",
+                "Runs proot and prints exactly what it said, unfiltered — the first thing worth " +
+                    "looking at when the engine will not come up.",
+                alias = "diagnose debug log proot output refresh broken error",
+                below = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(Modifier.weight(1f)) { Action("diagnose") { vm.diagnose() } }
+                            Box(Modifier.weight(1f)) { Action("refresh") { vm.refreshInstalls() } }
+                        }
+                        if (vm.setupLog.isNotBlank()) {
+                            Box(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(Ink)
+                                    .border(1.dp, Line, RoundedCornerShape(4.dp)).padding(8.dp)
+                            ) {
+                                SelectionContainer {
+                                    Text(
+                                        vm.setupLog, color = Text0, fontFamily = mono,
+                                        fontSize = 10.sp, lineHeight = 14.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        ))
+    )
+
+    val shown = groups.mapNotNull { it.filter(q.trim()) }
+
+    Column(Modifier.fillMaxSize()) {
+        OutlinedTextField(
+            value = q,
+            onValueChange = { q = it },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            placeholder = { Text("search settings…", fontFamily = mono, fontSize = 12.sp, color = Dim) },
+            textStyle = androidx.compose.ui.text.TextStyle(color = Text0, fontSize = 13.sp),
+            leadingIcon = { Text("⌕", color = Dim, fontSize = 15.sp) },
+            trailingIcon = {
+                if (q.isNotBlank()) {
+                    Text(
+                        "×", color = Dim, fontFamily = mono, fontSize = 15.sp,
+                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { q = "" }
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Orange, unfocusedBorderColor = Line, cursorColor = Orange
+            ),
+            shape = RoundedCornerShape(6.dp),
+            singleLine = true
         )
-        HorizontalDivider(color = Line)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("notifications", color = Dim, fontFamily = mono, fontSize = 11.sp)
-            Spacer(Modifier.weight(1f))
-            Surface(
-                color = Color.Transparent,
-                shape = RoundedCornerShape(4.dp),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp, if (vm.notifyOnDone) Green.copy(alpha = .6f) else Line
-                ),
-                onClick = { vm.notifyOnDone = !vm.notifyOnDone }
-            ) {
-                Text(
-                    if (vm.notifyOnDone) "on" else "off",
-                    color = if (vm.notifyOnDone) Green else Dim,
-                    fontFamily = mono, fontSize = 11.sp,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                )
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(start = 14.dp, end = 14.dp, bottom = 24.dp)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            if (shown.isEmpty()) {
+                Text("nothing matches", color = Dim, fontFamily = mono, fontSize = 12.sp)
             }
-        }
-        Text(
-            "Buzzes the phone when a turn finishes — but only while the app is in the " +
-                "background, so replies you're already reading stay silent. Long agent runs are " +
-                "the point: send one, put the phone down, get told when it lands.",
-            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
-        )
-        HorizontalDivider(color = Line)
-        Text("engine", color = Dim, fontFamily = mono, fontSize = 11.sp)
-        vm.installs.forEach { i ->
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (i.present) "●" else "○", color = if (i.present) Green else Dim, fontSize = 12.sp)
-                Column(Modifier.weight(1f)) {
-                    Text(i.label, color = Text0, fontSize = 13.sp, fontFamily = mono)
-                    Text(i.detail, color = Dim, fontSize = 11.sp)
+            shown.forEach { group ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        group.name.uppercase(), color = Dim, fontFamily = mono, fontSize = 10.sp,
+                        letterSpacing = 1.5.sp, modifier = Modifier.padding(start = 2.dp)
+                    )
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Panel)
+                            .border(1.dp, Line, RoundedCornerShape(8.dp))
+                    ) {
+                        group.prefs.forEachIndexed { idx, pref ->
+                            if (idx > 0) HorizontalDivider(color = Line)
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        pref.title, color = Text0, fontFamily = mono,
+                                        fontSize = 12.sp, modifier = Modifier.weight(1f)
+                                    )
+                                    pref.control?.invoke()
+                                }
+                                if (pref.blurb.isNotBlank()) {
+                                    Text(pref.blurb, color = Dim, fontSize = 11.sp, lineHeight = 16.sp)
+                                }
+                                pref.below?.invoke()
+                            }
+                        }
+                    }
                 }
             }
         }
-
-        Text(
-            "proot, its loader, libtalloc and a musl rootfs ship inside this APK and install themselves " +
-                "on first launch. Claude Code is not bundled — it's Anthropic's binary, so the button " +
-                "below pulls it from npm, and it logs in with its own OAuth. No API key is stored here.",
-            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
-        )
-
-        Button(
-            onClick = { vm.downloadEngine() },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Ink)
-        ) { Text("download claude (arm64 musl)", fontFamily = mono, fontSize = 12.sp) }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = { vm.bootstrap(force = true) },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(4.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Text0)
-            ) { Text("reinstall runtime", fontFamily = mono, fontSize = 11.sp) }
-            OutlinedButton(
-                onClick = { pickFiles.launch(arrayOf("*/*")) },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(4.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Dim)
-            ) { Text("import file", fontFamily = mono, fontSize = 11.sp) }
-        }
-
-        Button(
-            onClick = { vm.installTools() },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Orange, contentColor = Ink)
-        ) { Text("install shell + tools (bash, git, ripgrep)", fontFamily = mono, fontSize = 12.sp) }
-
-        Button(
-            onClick = { vm.installBuildTools() },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !vm.buildToolsInstalling,
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Orange)
-        ) {
-            Text(
-                if (vm.buildToolsInstalling) "downloading… watch the log below"
-                else "install android build tools (sdk, gradle, ndk)",
-                fontFamily = mono, fontSize = 12.sp
-            )
-        }
-        Text(
-            "About 250 MB: aapt2, d8, apksigner, ecj and a JDK (Android-native aarch64 builds), " +
-                "Google's android.jar for API 35, Gradle, plus clang/make for native code. " +
-                "Downloaded rather than bundled — Google's SDK terms don't allow shipping it " +
-                "inside this APK, and the NDK proper is x86-64 only, so clang is the ARM stand-in.",
-            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
-        )
-
-        Button(
-            onClick = { vm.installApkTools() },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !vm.apkToolsInstalling,
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Orange)
-        ) {
-            Text(
-                if (vm.apkToolsInstalling) "downloading… watch the log below"
-                else "install apk tools (apktool, jadx, dex2jar)",
-                fontFamily = mono, fontSize = 12.sp
-            )
-        }
-        Text(
-            "Takes APKs apart: apktool for smali and resources, jadx for Java source, dex2jar, " +
-                "plus aapt2/apksigner and a JDK. baksmali and smali are provided by apktool, " +
-                "which is built on them. Around 200 MB, downloaded rather than bundled.",
-            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
-        )
-
-        Text("permissions", color = Dim, fontFamily = mono, fontSize = 11.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(
-                "bypassPermissions" to "allow everything",
-                "acceptEdits" to "edits only"
-            ).forEach { (mode, label) ->
-                val on = vm.permissionMode == mode
-                OutlinedButton(
-                    onClick = { vm.choosePermissionMode(mode) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(4.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = if (on) Orange else Panel,
-                        contentColor = if (on) Ink else Dim
-                    )
-                ) { Text(label, fontFamily = mono, fontSize = 11.sp, maxLines = 1) }
-            }
-        }
-        Text(
-            "Headless has nobody to answer a permission prompt, so an unattended request just gets " +
-                "declined — that's why writes failed. The workspace is app-private and disposable, " +
-                "so the default grants them up front.",
-            color = Dim, fontSize = 11.sp, lineHeight = 16.sp
-        )
-
-        Button(
-            onClick = { vm.diagnose() },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Panel, contentColor = Orange)
-        ) { Text("diagnose (show proot's actual output)", fontFamily = mono, fontSize = 12.sp) }
-
-        if (vm.setupLog.isNotBlank()) {
-            Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(3.dp)).background(Panel)
-                    .border(1.dp, Line, RoundedCornerShape(3.dp)).padding(8.dp)
-            ) {
-                Text(vm.setupLog, color = Text0, fontFamily = mono, fontSize = 10.sp, lineHeight = 14.sp)
-            }
-        }
-
-        OutlinedButton(
-            onClick = { vm.refreshInstalls() },
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Dim)
-        ) { Text("refresh", fontFamily = mono, fontSize = 11.sp) }
     }
 }
