@@ -132,6 +132,18 @@ private fun Root(vm: Session) {
         ) {
             Scaffold(
                 containerColor = Ink,
+                // Every child here already applies the inset it cares about — Header takes the
+                // status bar, the composer and the shell row take the navigation bar and the
+                // keyboard, settings takes the navigation bar. Scaffold's default
+                // contentWindowInsets is systemBars, so leaving it on applied the navigation bar
+                // a SECOND time through `pad`, parking the composer a full nav bar (48dp on
+                // 3-button nav) above where it belongs. Measured: 152px of dead panel under the
+                // text field where only the 10dp of padding should be.
+                //
+                // Zeroing it also lets the composer's own Panel background paint behind the
+                // navigation bar instead of stopping short of it, which is what edge-to-edge is
+                // supposed to look like.
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 topBar = {
                     Header(vm, tab, onMenu = { scope.launch { drawer.open() } }) { tab = it }
                 }
@@ -1338,9 +1350,19 @@ private fun Composer(vm: Session) {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .resolveActivity(ctx.packageManager) != null
     }
-    // navigationBarsPadding keeps it clear of the gesture bar; imePadding lifts it only while the
-    // keyboard is up. Order matters — insets are consumed outermost first.
-    Column(Modifier.background(Panel).navigationBarsPadding().imePadding().padding(10.dp)) {
+    // The bottom inset is the LARGER of the nav bar and the keyboard, never their sum.
+    //
+    // Chaining .navigationBarsPadding().imePadding() adds them, and that is wrong: when the IME
+    // is up its inset already spans the navigation bar, so the sum leaves a dead strip exactly
+    // one nav bar tall between the composer and the keyboard. On gesture nav that strip is ~16dp
+    // and easy to miss; with 3-button nav it is ~48dp and the composer visibly floats.
+    // union() takes the per-side maximum, which is the actual geometry: nav bar height when the
+    // keyboard is down, IME height when it is up.
+    Column(
+        Modifier.background(Panel)
+            .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+            .padding(10.dp)
+    ) {
         if (vm.attachments.isNotEmpty()) {
             Row(
                 Modifier.padding(bottom = 8.dp).horizontalScroll(rememberScrollState()),
@@ -1543,7 +1565,9 @@ private fun TerminalTab(vm: Session) {
             }
         }
         Row(
-            Modifier.background(Panel).navigationBarsPadding().imePadding().padding(10.dp),
+            Modifier.background(Panel)
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                .padding(10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
