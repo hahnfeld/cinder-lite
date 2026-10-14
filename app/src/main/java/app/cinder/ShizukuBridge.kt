@@ -2,6 +2,7 @@ package app.cinder
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.LocalServerSocket
@@ -12,8 +13,10 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.provider.Settings
 import android.system.Os
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuProvider
@@ -32,7 +35,8 @@ import kotlin.concurrent.thread
  *
  * Protocol: the client sends one JSON line {"cmd", "interactive"} with its stdout and stderr fds
  * attached (SCM_RIGHTS), then frames — 'D' + length + stdin bytes, 'E' (stdin ended), 'K' (killed).
- * The reply is one line: "exit N" or "error <message>".
+ * The reply is one line: "exit N" or "error <message>". A {"phone": [op, args…]} line instead asks
+ * for a phone screen operation (`phone` in the sandbox), which the app handles itself.
  *
  * The service gets pipes, never the client's own fds: SELinux won't let the shell domain touch the
  * app's terminal (a /dev/pts device), so this process copies the output across.
@@ -94,6 +98,7 @@ object ShizukuBridge {
 
     @Synchronized
     fun stop(ctx: Context) {
+        PhoneScreenActivity.current?.let { it.release(); it.finish() }
         val socket = server ?: return
         server = null
         // accept() doesn't notice close(); a throwaway connection wakes it so its thread can exit.
@@ -137,6 +142,11 @@ object ShizukuBridge {
         val header = JSONObject(readLine(input))
         val fds = client.ancillaryFileDescriptors?.also(received)
         if (fds == null || fds.size < 2) { reply("error rish sent no output streams"); return }
+        header.optJSONArray("phone")?.let { op ->
+            val out = FileOutputStream(fds[0])
+            reply(try { phone(ctx, op, out); "exit 0" } catch (e: Exception) { "error ${e.message}" })
+            return
+        }
 
         val shell = try { connect(ctx) } catch (e: Exception) { reply("error ${e.message}"); return }
         val stdin = ParcelFileDescriptor.createPipe()
@@ -183,6 +193,64 @@ object ShizukuBridge {
         output.forEach { it.join() }
         reply(if (code == null) "error lost the Shizuku service" else "exit $code")
     }
+
+    /**
+     * A phone screen operation: `phone start|stop|id|shot|setup`, or `ui|click|type|scroll` through
+     * [PhoneAccessibility]. Output goes to [out], the client's stdout.
+     */
+    private fun phone(ctx: Context, op: JSONArray, out: FileOutputStream) {
+        fun arg(i: Int) = op.optString(i).ifEmpty { error("missing an argument; see: phone help") }
+        fun screen() = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 }
+            ?: error("the phone screen isn't open. Run: phone start")
+        fun a11y() = PhoneAccessibility.instance ?: error("Claude can't read the phone screen until " +
+            "\"Cinder Lite phone screen\" is on in Android's Accessibility settings (run: phone setup). " +
+            "Until then use phone shot and phone tap.")
+        fun print(text: String) { out.write(text.toByteArray()); out.flush() }
+        when (op.optString(0)) {
+            "start" -> {
+                val screen = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 } ?: run {
+                    connect(ctx)
+                    PhoneScreenActivity.failure = null
+                    ctx.startActivity(Intent(ctx, PhoneScreenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    val deadline = System.currentTimeMillis() + 10_000
+                    var started: PhoneScreenActivity? = null
+                    while (started == null && System.currentTimeMillis() < deadline) {
+                        PhoneScreenActivity.failure?.let { error(it) }
+                        started = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 }
+                        if (started == null) Thread.sleep(100)
+                    }
+                    started ?: error("Android didn't open the phone screen. Open Cinder Lite and try again.")
+                }
+                val spec = PhoneScreenActivity.spec(ctx)
+                print("phone screen open: display ${screen.displayId}, ${spec.width}x${spec.height}\n")
+                if (PhoneAccessibility.instance == null) print("Note: phone ui/click/type/scroll need " +
+                    "\"Cinder Lite phone screen\" on in Accessibility settings (run: phone setup)\n")
+            }
+            "stop" -> PhoneScreenActivity.current?.let { main.post { it.release(); it.finish() } }
+            "id" -> print("${screen().displayId}\n")
+            "shot" -> out.write(screen().shot())
+            "setup" -> {
+                // This app's own page in Accessibility settings, where the user turns it on.
+                val component = ComponentName(ctx, PhoneAccessibility::class.java).flattenToString()
+                val intent = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+                    .putExtra(Intent.EXTRA_COMPONENT_NAME, component)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { ctx.startActivity(intent) }.getOrElse {
+                    ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+                print("Opened Accessibility settings on the phone. Turn on \"Cinder Lite phone screen\". If " +
+                    "Android says it's a restricted setting: App info → ⋮ → Allow restricted settings, then try again.\n")
+            }
+            "ui" -> print(a11y().ui(screen().displayId))
+            "click" -> a11y().click(arg(1).toInt())
+            "type" -> a11y().type(arg(1).toInt(), op.optString(2))
+            "scroll" -> a11y().scroll(arg(1).toInt(), arg(2))
+            else -> error("unknown phone operation: ${op.optString(0)}")
+        }
+    }
+
+    /** The bound [ShellService] if it's already connected, for the phone screen window. */
+    fun connected(): IShellService? = service?.takeIf { it.asBinder().isBinderAlive }
 
     /** The bound [ShellService], binding it (and asking for Shizuku permission) if needed. */
     private fun connect(ctx: Context): IShellService {

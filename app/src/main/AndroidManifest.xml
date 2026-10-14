@@ -45,6 +45,34 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- The phone screen Claude drives (`phone` in the sandbox): a picture-in-picture window
+             showing a virtual display. Its own task, so the PiP never takes the terminal with it. -->
+        <activity
+            android:name=".PhoneScreenActivity"
+            android:exported="false"
+            android:label="Phone screen"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.phone"
+            android:excludeFromRecents="true"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode" />
+
+        <!-- How Claude reads and operates the phone screen. The user turns it on in Android's
+             Accessibility settings; it only reads the phone screen, and only when asked. -->
+        <service
+            android:name=".PhoneAccessibility"
+            android:exported="true"
+            android:label="Cinder Lite phone screen"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_accessibility" />
+        </service>
+
         <!-- Receives Shizuku's binder, for the optional adb-shell access (⋮ → Shizuku). -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

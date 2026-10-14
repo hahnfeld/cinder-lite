@@ -1,6 +1,9 @@
 package app.cinder;
 
-// Runs shell commands for the sandbox's `rish`, inside a Shizuku user service (adb-shell uid).
+import android.view.Surface;
+
+// Runs shell commands for the sandbox's `rish`, and owns the phone screen's virtual display, inside
+// a Shizuku user service (adb-shell uid).
 interface IShellService {
     // Shizuku calls this (transaction 16777115) when it tears the service down.
     void destroy() = 16777114;
@@ -14,4 +17,12 @@ interface IShellService {
     int waitFor(int id) = 2;
 
     void kill(int id) = 3;
+
+    // A virtual display (the phone screen) that renders into [surface]; returns its display id.
+    int createDisplay(int width, int height, int dpi, in Surface surface) = 4;
+
+    // Points the display at a new surface, or at none (null) while the window has no surface.
+    void setSurface(int displayId, in Surface surface) = 5;
+
+    void releaseDisplay(int displayId) = 6;
 }

@@ -105,7 +105,8 @@ the 32-bit proot loader.
 - **Package management without root** — `apk add`, `npm -g`, `pip install`, plus Android build and
   APK decompile tools
 - **Optional adb-shell access via [Shizuku](https://shizuku.rikka.app/)** — off by default; see
-  [below](#adb-shell-access-with-shizuku-optional)
+  [below](#adb-shell-access-with-shizuku-optional). It also lets Claude drive apps on a separate
+  phone screen in a picture-in-picture window
 
 **Storage:** the APK is ~4.5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
 is ~240 MB, plus the rootfs and base tools). Installing the Android toolchains adds ~200 MB of the
@@ -317,10 +318,56 @@ sandbox   rish            exits with the command's exit status
   under `/sdcard` first.
 - **Shizuku has to be restarted after every reboot**, unless the phone is rooted.
 
+### The phone screen: Claude drives apps in a picture-in-picture window
+
+With Shizuku on, Claude can also use apps for you, on a **separate virtual screen** shown in a
+picture-in-picture window that floats over everything, like a video. The apps it opens run there,
+not on your screen, so you can keep using your phone, watch what Claude is doing, drag the window
+anywhere, or tap it to expand it. Ask something like *"open Settings on the phone screen and tell me
+the Android version"* and Claude uses the `phone` command:
+
+```sh
+phone start                  # open the phone screen (the PiP window)
+phone open com.android.settings
+phone ui                     # the on-screen elements, numbered, with text and bounds
+phone click 15               # click element 15
+phone type 9 'wifi'          # put text into field 9 (no keyboard involved)
+phone scroll 10 down
+phone shot                   # screenshot to /tmp/phone.png, for when the list isn't enough
+phone tap 300 147            # …and coordinates in that screenshot's pixels
+phone key back
+phone stop                   # close it, and the apps on it
+```
+
+`phone ui` reads the screen through Android's accessibility API, the same way a screen reader does,
+so Claude works from real buttons and text fields rather than guessing from pictures. For that, turn
+on **Cinder Lite phone screen** in Settings → Accessibility once (`phone setup` opens the page; on a
+sideloaded install Android may first call it a restricted setting: App info → ⋮ → Allow restricted
+settings). Until then Claude can still use `phone shot` and coordinates. The service only reads the
+phone screen, and only when a `phone` command asks.
+
+How it works: Cinder Lite's Shizuku service creates the virtual display with adb-shell privileges,
+the same way scrcpy's `--new-display` does, and the display draws straight into the PiP window, with
+no video encoding or streaming. The display has its own focus and no keyboard, so taps and typing
+there never reach your screen, and yours never reach it. Closing the window (its ✕, a swipe, or
+`phone stop`) closes the display and the apps on it; they don't move onto your screen. Turning
+Shizuku off closes it too.
+
+Limits:
+
+- An app that's already open on your screen moves to the phone screen when Claude opens it there:
+  Android keeps one window per app.
+- Apps that block screenshots (banking apps, for example) show black in `phone shot`, though
+  `phone ui` still sees them. Some refuse to run at all while an accessibility service is on.
+- With Android's Advanced Protection on, accessibility services from outside the Play Store are
+  blocked, so only `phone shot` and coordinates work.
+- You watch rather than drive: Android keeps touches in a PiP window for its own controls.
+
 ### Be deliberate about turning it on
 
 While it's on, everything in the sandbox has adb-shell power, Claude included. That means it can
-uninstall apps, change settings, grant permissions and tap the screen. Claude Code's permission
+uninstall apps, change settings, grant permissions and tap the screen, and use apps on the phone
+screen, where you're signed in to them. Claude Code's permission
 prompts still apply to its commands, so review `rish` and `adb shell` calls as you would any other
 command. Turn it off when you don't need it: ⋮ → **Shizuku** again, or revoke Cinder Lite in the
 Shizuku app.

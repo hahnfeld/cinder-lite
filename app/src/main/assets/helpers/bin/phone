@@ -1,0 +1,53 @@
+#!/bin/sh
+# phone: drive Cinder Lite's phone screen, a separate virtual screen shown in a picture-in-picture
+# window (needs Shizuku support on: Cinder Lite ⋮ → Shizuku). Element commands use the accessibility
+# tree; coordinate commands use display pixels, the same numbers as in `phone ui` bounds and shots.
+usage() {
+  cat <<'USAGE'
+phone start                     open the phone screen (a picture-in-picture window)
+phone stop                      close it, and the apps on it
+phone open <package>            launch an app on it
+phone ui                        list the on-screen elements, numbered, with text and bounds
+phone click N                   click element N
+phone type N 'text'             replace the text in field N
+phone scroll N up|down|left|right
+phone shot [file]               screenshot (default /tmp/phone.png); prints the path
+phone tap X Y                   tap at display pixels
+phone swipe X1 Y1 X2 Y2 [ms]
+phone text 'text'               type into the focused field
+phone key back|enter|tab|del|<KEYCODE_…>
+phone setup                     open Android's Accessibility settings to allow ui/click/type/scroll
+USAGE
+}
+
+op=$1
+[ $# -gt 0 ] && shift
+case $op in
+  start|stop|ui|click|type|scroll|setup) exec rish --phone "$op" "$@" ;;
+  shot)
+    file=${1:-/tmp/phone.png}
+    rish --phone shot > "$file.part" && mv "$file.part" "$file" && echo "$file" || { rm -f "$file.part"; exit 1; } ;;
+  open|tap|swipe|text|key)
+    id=$(rish --phone id) || exit 1
+    case $op in
+      open)
+        [ -n "$1" ] || { echo "phone: open needs a package name" >&2; exit 1; }
+        activity=$(rish -c "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER '$1'" | tail -n 1)
+        case $activity in */*) ;; *) echo "phone: no app to open for '$1'" >&2; exit 1 ;; esac
+        exec rish -c "am start --display $id -n '$activity'" ;;
+      tap) exec rish -c "input -d $id tap $1 $2" ;;
+      swipe) exec rish -c "input -d $id swipe $1 $2 $3 $4 ${5:-300}" ;;
+      text)
+        # input text needs spaces as %s and the rest shell-quoted for the phone's shell.
+        text=$(printf '%s' "$1" | sed "s/'/'\\\\''/g; s/ /%s/g")
+        exec rish -c "input -d $id text '$text'" ;;
+      key)
+        case $1 in
+          back) k=KEYCODE_BACK ;; enter) k=KEYCODE_ENTER ;; tab) k=KEYCODE_TAB ;; del) k=KEYCODE_DEL ;;
+          *) k=$1 ;;
+        esac
+        exec rish -c "input -d $id keyevent $k" ;;
+    esac ;;
+  ""|help|-h|--help) usage ;;
+  *) echo "phone: unknown command '$op'" >&2; usage >&2; exit 1 ;;
+esac

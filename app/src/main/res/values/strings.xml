@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phone_accessibility_description">Lets Claude read and operate Cinder Lite\'s phone screen, the separate virtual screen it opens in a picture-in-picture window. It only looks at that screen, and only when Claude runs a phone command. Needs Shizuku support on (Cinder Lite ⋮ → Shizuku).</string>
+</resources>
