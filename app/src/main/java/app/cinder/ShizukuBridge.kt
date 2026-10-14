@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.system.Os
 import android.util.Log
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
@@ -114,6 +115,17 @@ object ShizukuBridge {
     }
 
     private fun relay(ctx: Context, client: LocalSocket) {
+        var fds: Array<java.io.FileDescriptor>? = null
+        try {
+            relayCommand(ctx, client) { fds = it }
+        } finally {
+            // Our copies of the client's stdout/stderr. If they stay open, whatever reads the other
+            // end of a pipe (rish … | head) never sees EOF and waits forever.
+            fds?.forEach { runCatching { Os.close(it) } }
+        }
+    }
+
+    private fun relayCommand(ctx: Context, client: LocalSocket, received: (Array<java.io.FileDescriptor>) -> Unit) {
         val out = client.outputStream
         fun reply(line: String) { runCatching { out.write("$line\n".toByteArray()); out.flush() } }
 
@@ -123,7 +135,7 @@ object ShizukuBridge {
 
         val input = DataInputStream(client.inputStream)
         val header = JSONObject(readLine(input))
-        val fds = client.ancillaryFileDescriptors
+        val fds = client.ancillaryFileDescriptors?.also(received)
         if (fds == null || fds.size < 2) { reply("error rish sent no output streams"); return }
 
         val shell = try { connect(ctx) } catch (e: Exception) { reply("error ${e.message}"); return }
@@ -165,9 +177,11 @@ object ShizukuBridge {
             }
         }
 
-        val code = try { shell.waitFor(id) } catch (e: Exception) { reply("error lost the Shizuku service"); return }
-        output.forEach { it.join() }   // all output shown before the client sees the exit code
-        reply("exit $code")
+        val code = runCatching { shell.waitFor(id) }.getOrNull()
+        // All output shown before the client sees the exit code, and before relay() closes its fds.
+        // If the service died, its pipe ends died with it, so these still finish.
+        output.forEach { it.join() }
+        reply(if (code == null) "error lost the Shizuku service" else "exit $code")
     }
 
     /** The bound [ShellService], binding it (and asking for Shizuku permission) if needed. */
