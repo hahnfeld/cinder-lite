@@ -1,6 +1,34 @@
 {
   "hooks": {
-    "Notification": [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/cinder-notify" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/cinder-notify" }] }]
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/cinder-notify"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/cinder-notify"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/cinder-notify"
+          }
+        ]
+      }
+    ]
   }
 }

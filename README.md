@@ -95,8 +95,9 @@ the 32-bit proot loader.
   the sandbox; ask Claude to save things to `/sdcard/Download`
 - **Survives being backgrounded** — a foreground service and wake lock hold the process, since the
   CLI is a child of it. Stop it from the notification or ⋮ → Stop
-- **Phone notifications from Claude** — while the app isn't on screen, Claude Code's own alerts
-  (needs your permission, waiting for input) and "finished" become phone notifications, via hooks
+- **Phone notifications from Claude** — while the app isn't on screen, Claude Code's alerts when it
+  needs you (permission requests, questions) and "finished" for turns of a minute or more become
+  phone notifications, via hooks
   passed with `--settings`; your own Claude settings are untouched
 - **⋮ menu** — switch between Claude and a Shell (bash in the same sandbox; both keep running and
   keep their scrollback) · Restart the one you're looking at · Stop · Reinstall sandbox (a clean

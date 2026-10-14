@@ -37,6 +37,7 @@ class SessionService : Service() {
 
     private var lock: PowerManager.WakeLock? = null
     private var watcher: FileObserver? = null
+    @Volatile private var turnStarted = Long.MAX_VALUE   // unknown start: never counts as long
 
     override fun onCreate() {
         super.onCreate()
@@ -45,10 +46,7 @@ class SessionService : Service() {
             override fun onEvent(event: Int, path: String?) {
                 when (path) {
                     "open-request" -> openUrl(take(File(dir, path)).trim())
-                    "notify-request" -> {
-                        val hook = runCatching { JSONObject(take(File(dir, path))) }.getOrNull()
-                        if (hook != null && !MainActivity.visible) notifyFromHook(hook)
-                    }
+                    "notify-request" -> runCatching { JSONObject(take(File(dir, path))) }.getOrNull()?.let(::onHook)
                     "stage-request" -> {
                         File(dir, path).delete()
                         thread {
@@ -97,11 +95,28 @@ class SessionService : Service() {
         super.onDestroy()
     }
 
-    /** A Claude Code hook event: Notification (needs permission, waiting for input) or Stop (done). */
-    private fun notifyFromHook(event: JSONObject) {
-        val message = event.optString("message").ifBlank {
-            if (event.optString("hook_event_name") == "Stop") "Claude has finished" else return
+    /**
+     * A Claude Code hook event. UserPromptSubmit marks when a turn starts; Stop (the turn is done)
+     * notifies only for turns that ran a minute or more; Notification does when Claude needs
+     * something (permission, a question) — but not its idle "waiting for your input" reminder, which
+     * would ping after every reply. Nothing is posted while the app is on screen.
+     */
+    private fun onHook(event: JSONObject) {
+        val now = System.currentTimeMillis()
+        val message = when (event.optString("hook_event_name")) {
+            "UserPromptSubmit" -> { turnStarted = now; return }
+            "Stop" -> {
+                val took = now - turnStarted
+                turnStarted = Long.MAX_VALUE
+                if (took < LONG_TURN_MS) return
+                "Claude has finished"
+            }
+            else -> {
+                if (event.optString("notification_type") == "idle_prompt") return
+                event.optString("message").ifBlank { return }
+            }
         }
+        if (MainActivity.visible) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(ALERT_CHANNEL, "Claude Code alerts", NotificationManager.IMPORTANCE_HIGH)
@@ -148,6 +163,7 @@ class SessionService : Service() {
         private const val WAKE_LOCK_MS = 60 * 60 * 1000L
         private const val ALERT_CHANNEL = "cinder-alerts"
         private const val ALERT_ID = 9003
+        private const val LONG_TURN_MS = 60_000L
 
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, SessionService::class.java))

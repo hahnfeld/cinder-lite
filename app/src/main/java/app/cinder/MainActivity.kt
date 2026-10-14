@@ -54,7 +54,10 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private lateinit var ctrlKey: Button
     private var ctrl = false
     private var fontSize = 0
-    private var keyboardPending = false
+    // Ask for the keyboard as soon as the window has focus — not when the session attaches, which
+    // waits on sandbox startup. Before focus, Android would defer it to the first touch and slide it
+    // up mid-tap, moving the key row so that tap missed.
+    private var keyboardPending = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -175,14 +178,12 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         terminal.visibility = View.VISIBLE
         sessions.values.forEach { it.updateTerminalSessionClient(this) }
         terminal.attachSession(s)
-        // Before the window has focus, Android defers the keyboard until the first touch — and then
-        // slides it up mid-tap, moving the key row so that first tap misses. Wait for focus instead.
-        if (hasWindowFocus()) showKeyboard() else keyboardPending = true
+        if (hasWindowFocus()) showKeyboard()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && keyboardPending) {
+        if (hasFocus && keyboardPending && terminal.visibility == View.VISIBLE) {
             keyboardPending = false
             showKeyboard()
         }
