@@ -195,20 +195,135 @@ Alpine's JDK too.
 
 ## adb-shell access with Shizuku (optional)
 
-Inside the sandbox, Claude and the shell run as the app's own unprivileged user, so `pm`, `am`,
-`settings`, `dumpsys`, `cmd` and `input` don't work. If you use [Shizuku](https://shizuku.rikka.app/),
-Cinder Lite can run commands with adb-shell privileges for you:
+Inside the sandbox, Claude and the shell run as Cinder Lite's own app user, which Android gives very
+few rights. So the Android system tools don't work there: `pm` for packages, `am` for activities,
+`settings`, `dumpsys`, `cmd`, `input`, `wm` and so on. On a computer you'd reach them with
+`adb shell`. With Shizuku, Cinder Lite can give the sandbox the same access with nothing but the
+phone.
 
-1. Install Shizuku (Google Play or GitHub) and start it via Wireless debugging, as its app explains.
-   It has to be started again after every reboot.
-2. In Cinder Lite: ⋮ → **Shizuku**, and allow Cinder Lite in Shizuku's permission dialog.
-3. In the sandbox: `rish -c 'pm list packages'`, or `adb shell pm list packages`. `rish` with no
-   arguments is an interactive shell (line-based, no tty). Claude knows about it too.
+### What Shizuku is
 
-How it works: Shizuku's own `rish` needs Android's Java runtime, which can't start inside proot, so
-Cinder Lite's `rish` asks the app instead, over a local socket only the app's own sandbox may use. The
-app runs the command in a Shizuku user service with adb-shell privileges. Shizuku support is off by
-default, and nothing listens while it's off.
+[Shizuku](https://shizuku.rikka.app/) ([source](https://github.com/RikkaApps/Shizuku)) is a free,
+open-source Android app by RikkaApps. It doesn't root the phone. Instead, it uses Android's own
+**Wireless debugging** (Android 11+) once to start a small background server. That server runs with
+the same privileges as `adb shell`: the `shell` user, uid 2000. Other apps can then ask Shizuku to do
+things with those privileges. Each app needs your permission, granted in a dialog and revocable in
+the Shizuku app at any time.
+
+The server keeps running until the phone restarts. After every reboot you start it again from the
+Shizuku app, with a couple of taps once Wireless debugging is paired. Rooted phones can start it
+without Wireless debugging.
+
+`rish` runs any command `adb shell` can: everything in `/system/bin`, the hundreds of system
+services behind `cmd`, and shell built-ins, pipes and loops. Some examples:
+
+| Command | What it does |
+|---|---|
+| `pm` | list, install, uninstall, disable or clear apps; grant or revoke their permissions |
+| `am` | start activities and services, send broadcasts, force-stop apps |
+| `cmd <service> …` | talk to a system service directly, e.g. `cmd wifi`, `cmd bluetooth_manager`, `cmd uimode night yes`, `cmd notification`, `cmd statusbar`, `cmd battery`; `cmd -l` lists them all |
+| `settings` | read and change system, secure and global settings |
+| `svc` | turn Wi-Fi, mobile data, Bluetooth and NFC on or off |
+| `dumpsys` | inspect a service's state (battery, activities, notifications, …) |
+| `appops` | view and change per-app permission operations |
+| `wm` | change the screen size and density |
+| `input`, `uiautomator dump` | inject taps, swipes, keys and text; dump the on-screen UI as XML |
+| `screencap`, `screenrecord` | take screenshots and screen recordings |
+| `logcat` | read the system log |
+| `content` | query and modify content providers |
+| `getprop`, `setprop` | read device properties, and set the ones the shell user may set |
+
+They don't allow reading other apps' private data or changing the system partition. That needs root.
+
+### Setting it up
+
+1. Install Shizuku from [Google Play](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)
+   or [GitHub](https://github.com/RikkaApps/Shizuku/releases). Start it via Wireless debugging, as
+   its app walks you through.
+2. In Cinder Lite: ⋮ → **Shizuku**, then allow Cinder Lite in Shizuku's permission dialog. The
+   setting is remembered, and the menu item shows a check while it's on.
+3. In the sandbox:
+
+   ```sh
+   rish -c 'pm list packages -3'           # one command
+   rish -c 'pm list packages -3' | wc -l   # pipes and redirects work as usual
+   echo hello | rish -c cat                # stdin is passed through when it isn't a terminal
+   rish                                    # an interactive shell; type exit to leave
+   adb shell settings get global airplane_mode_on
+   ```
+
+   `rish` exits with the command's exit status, and Ctrl-C stops the command on the phone too.
+
+Claude knows about all this: ask it something like *"how many apps are installed?"* or *"turn on
+dark mode"* and it uses `rish` on its own. If Shizuku support is off or Shizuku isn't running, it
+tells you what to do.
+
+If you start Shizuku while Cinder Lite is already open, reopen Cinder Lite (⋮ → Stop, then open it
+again). Shizuku only hands its connection to an app when the app's process starts.
+
+### The `adb` shim
+
+Many scripts, and Claude's own habits, reach for `adb shell …`. The sandbox's `adb` is a small shim:
+
+| You type | What runs |
+|---|---|
+| `adb shell <command…>` | `rish -c '<command…>'`. The arguments are joined with spaces, as real `adb shell` does. |
+| `adb shell` | `rish`, the interactive shell |
+| anything else (`adb devices`, `adb connect`, `adb install`, …) | the real adb client, if you've installed it with `apk add android-tools`, for example to drive *another* device over the network. Without it, the shim explains that only `adb shell` works. |
+
+To install an APK on this phone, you don't need `adb install`. Copy the file to `/sdcard/Download`
+and open it there, or run `rish -c 'pm install /sdcard/Download/app.apk'`.
+
+### How it works
+
+Shizuku comes with its own `rish` command, but it can't run here. It starts Android's Java runtime
+(`app_process`), and inside proot that can't load: Android lets the app *run* files in `/system` but
+not *read* them, and proot needs to read them. So the app itself talks to Shizuku, and the sandbox
+reaches the app through a small bridge:
+
+```
+sandbox   rish -c 'pm list packages'          (a short Python script)
+            │  Unix socket "cinder-rish": the command, plus rish's own stdout and stderr
+            ▼
+app       ShizukuBridge   checks the caller is the app's own sandbox (same uid)
+            │  binder
+            ▼
+Shizuku   ShellService    runs /system/bin/sh -c '…' as the shell user (uid 2000)
+            │  output through pipes, back through the app to rish's stdout/stderr
+            ▼
+sandbox   rish            exits with the command's exit status
+```
+
+- **The bridge** (`ShizukuBridge.kt`) is a socket in Android's abstract namespace, opened only while
+  the setting is on. Any app could connect to it, so every connection is checked: only processes
+  running as Cinder Lite's own uid (its sandbox) are served. Anything else is dropped.
+- **The service** (`ShellService.kt`) is a Shizuku *user service*. Shizuku starts it in a separate
+  process with shell privileges, from Cinder Lite's own APK. It runs one shell per `rish` call.
+- **Output goes through pipes**, not straight to your terminal. Android's security policy (SELinux)
+  doesn't let the shell user write to the app's terminal device, so the app copies the output
+  across. Input travels the other way, from `rish` over the socket and into the command's stdin.
+- **Ctrl-C or closing `rish`** kills the command. When the setting is turned off, the bridge stops
+  listening and the Shizuku service is shut down.
+
+### Limits
+
+- **No real terminal.** Interactive `rish` is line-based, like piping into `adb shell`. Full-screen
+  programs like `top` (without `-n 1`) or `vi` won't work, and there's no prompt editing.
+- **`rish -c` at a terminal gets no keyboard input.** Pipe the input in if a command needs it.
+- **Only Ctrl-C is passed on.** Other signals aren't forwarded.
+- **Commands see the phone's filesystem, not the sandbox's.** `/sdcard` is the same in both, but
+  `/workspace`, `/tmp` and the rest of the sandbox live in Cinder Lite's private storage, which the
+  shell user can't read. To hand a file to a `rish` command (an APK for `pm install`, say), put it
+  under `/sdcard` first.
+- **Shizuku has to be restarted after every reboot**, unless the phone is rooted.
+
+### Be deliberate about turning it on
+
+While it's on, everything in the sandbox has adb-shell power, Claude included. That means it can
+uninstall apps, change settings, grant permissions and tap the screen. Claude Code's permission
+prompts still apply to its commands, so review `rish` and `adb shell` calls as you would any other
+command. Turn it off when you don't need it: ⋮ → **Shizuku** again, or revoke Cinder Lite in the
+Shizuku app.
 
 <br>
 
