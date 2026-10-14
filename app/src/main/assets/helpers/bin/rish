@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""rish: run a command with adb-shell privileges through Shizuku.
+
+Cinder Lite relays it to the Shizuku app (turn it on in the app's ⋮ menu → Shizuku).
+  rish                  interactive shell (line-based, no tty)
+  rish -c 'command'     run one command
+  rish command args...  the same, joined with spaces
+"""
+import json, os, signal, socket, sys, threading
+
+
+def main():
+    args = sys.argv[1:]
+    if args[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    if not args:
+        cmd, interactive = "", True
+    elif args[0] == "-c":
+        cmd, interactive = " ".join(args[1:]), False
+    else:
+        cmd, interactive = " ".join(args), False
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect("\0cinder-rish")
+    except OSError:
+        sys.stderr.write("rish: Shizuku support is off. Turn it on in Cinder Lite: ⋮ → Shizuku\n")
+        return 1
+
+    lock = threading.Lock()
+
+    def frame(kind, data=b""):
+        # The app may already have answered (an error) and closed its side; the reply still waits
+        # in the socket, so a failed send is ignored and the reply read below.
+        try:
+            with lock:
+                sock.sendall(kind + len(data).to_bytes(4, "big") + data)
+        except OSError:
+            pass
+
+    # Our stdout and stderr go to the app with the request, so output is written straight to them.
+    header = json.dumps({"cmd": cmd, "interactive": interactive}) + "\n"
+    socket.send_fds(sock, [header.encode()], [1, 2])
+
+    def forward_stdin():
+        try:
+            while True:
+                data = os.read(0, 65536)
+                if not data:
+                    break
+                frame(b"D", data)
+            frame(b"E")
+        except OSError:
+            pass
+
+    # A one-shot command at a terminal gets no stdin (like `adb shell cmd`); piped input is forwarded.
+    if interactive or not os.isatty(0):
+        threading.Thread(target=forward_stdin, daemon=True).start()
+    else:
+        frame(b"E")
+
+    def interrupted(*_):
+        frame(b"K")
+        os._exit(130)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, interrupted)
+
+    reply = b""
+    while not reply.endswith(b"\n"):
+        data = sock.recv(4096)
+        if not data:
+            sys.stderr.write("rish: lost the connection to Cinder Lite\n")
+            return 1
+        reply += data
+    line = reply.decode().strip()
+    if line.startswith("exit "):
+        return int(line[5:])
+    sys.stderr.write("rish: " + line.removeprefix("error ") + "\n")
+    return 1
+
+
+sys.exit(main())

@@ -2,6 +2,7 @@
 agp = "9.4.1"
 kotlin = "2.4.21"
 termux = "0.118.0"
+shizuku = "13.1.5"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -10,3 +11,5 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 
 [libraries]
 termux-terminal-view = { group = "com.termux.termux-app", name = "terminal-view", version.ref = "termux" }
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }

@@ -104,6 +104,8 @@ the 32-bit proot loader.
   reset that keeps your login and `/workspace`)
 - **Package management without root** — `apk add`, `npm -g`, `pip install`, plus Android build and
   APK decompile tools
+- **Optional adb-shell access via [Shizuku](https://shizuku.rikka.app/)** — off by default; see
+  [below](#adb-shell-access-with-shizuku-optional)
 
 **Storage:** the APK is ~4.5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
 is ~240 MB, plus the rootfs and base tools). Installing the Android toolchains adds ~200 MB of the
@@ -188,6 +190,25 @@ binaries and can't run on an ARM phone, and neither can Gradle-based Android bui
 Plugin fetches x86-64 tools). The first Termux install asks the app to copy the device's bionic
 libraries (~200 MB) into the sandbox, so keep the app open while it runs. apktool and jadx run on
 Alpine's JDK too.
+
+<br>
+
+## adb-shell access with Shizuku (optional)
+
+Inside the sandbox, Claude and the shell run as the app's own unprivileged user, so `pm`, `am`,
+`settings`, `dumpsys`, `cmd` and `input` don't work. If you use [Shizuku](https://shizuku.rikka.app/),
+Cinder Lite can run commands with adb-shell privileges for you:
+
+1. Install Shizuku (Google Play or GitHub) and start it via Wireless debugging, as its app explains.
+   It has to be started again after every reboot.
+2. In Cinder Lite: ⋮ → **Shizuku**, and allow Cinder Lite in Shizuku's permission dialog.
+3. In the sandbox: `rish -c 'pm list packages'`, or `adb shell pm list packages`. `rish` with no
+   arguments is an interactive shell (line-based, no tty). Claude knows about it too.
+
+How it works: Shizuku's own `rish` needs Android's Java runtime, which can't start inside proot, so
+Cinder Lite's `rish` asks the app instead, over a local socket only the app's own sandbox may use. The
+app runs the command in a Shizuku user service with adb-shell privileges. Shizuku support is off by
+default, and nothing listens while it's off.
 
 <br>
 

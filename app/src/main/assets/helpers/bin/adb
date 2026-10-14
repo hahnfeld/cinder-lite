@@ -1,0 +1,11 @@
+#!/bin/sh
+# adb shim: `adb shell …` runs through rish (Shizuku, turned on in Cinder Lite's ⋮ menu). Anything
+# else goes to the real adb client if android-tools is installed.
+if [ "$1" = "shell" ]; then
+  shift
+  [ $# -eq 0 ] && exec rish
+  exec rish -c "$*"
+fi
+[ -x /usr/bin/adb ] && exec /usr/bin/adb "$@"
+echo "adb: only 'adb shell' works here (through Shizuku). For the full client: apk add android-tools" >&2
+exit 1

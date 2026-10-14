@@ -239,11 +239,44 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         menu.add(other.title).setOnMenuItemClickListener { show(other); true }
         menu.add("Restart ${shown.title}").setOnMenuItemClickListener { restart(shown); true }
         menu.add("Stop").setOnMenuItemClickListener { stop(applicationContext); true }
+        menu.add("Shizuku").setCheckable(true).setChecked(ShizukuBridge.isEnabled(this@MainActivity))
+            .setOnMenuItemClickListener { toggleShizuku(); true }
         menu.add("Reinstall sandbox").setOnMenuItemClickListener {
             if (!busy.get()) { finishAll(); boot(reset = true) }
             true
         }
     }.show()
+
+    /**
+     * Optional adb-shell access for the sandbox (`rish`, `adb shell`) through the Shizuku app.
+     * Off by default; most people won't have Shizuku.
+     */
+    private fun toggleShizuku() {
+        val app = applicationContext
+        fun say(text: String) = Toast.makeText(app, text, Toast.LENGTH_LONG).show()
+        when {
+            ShizukuBridge.isEnabled(app) -> {
+                ShizukuBridge.setEnabled(app, false)
+                say("Shizuku off: rish and adb shell are disabled")
+            }
+            !ShizukuBridge.isInstalled(app) ->
+                say("Shizuku isn't installed. Get it from Google Play or github.com/RikkaApps/Shizuku")
+            else -> {
+                ShizukuBridge.setEnabled(app, true)
+                when {
+                    !ShizukuBridge.isRunning() -> say("Shizuku on. Start Shizuku in its app. If it's already " +
+                        "running, reopen Cinder Lite (⋮ → Stop, then open it again)")
+                    ShizukuBridge.hasPermission() -> say("Shizuku on: rish and adb shell work in the sandbox")
+                    else -> ShizukuBridge.requestPermission { granted ->
+                        runOnUiThread {
+                            say(if (granted) "Shizuku on: rish and adb shell work in the sandbox"
+                                else "Shizuku on, but permission was denied. rish will ask again")
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * Voice typing through the phone's own speech recognizer (no microphone permission here; the

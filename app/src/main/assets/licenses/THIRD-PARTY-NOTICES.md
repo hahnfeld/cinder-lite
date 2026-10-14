@@ -14,6 +14,7 @@ texts are in this directory, and corresponding source for each is at the link gi
 | libandroid-shmem | 0.7 — Termux package `libandroid-shmem_0.7_aarch64.deb` | BSD-3-Clause (`libandroid-shmem-LICENSE.txt`) | https://github.com/termux/libandroid-shmem/tree/v0.7 |
 | Termux terminal-view / terminal-emulator | 0.118.0 | Apache-2.0 (`Apache-2.0.txt`) | https://github.com/termux/termux-app/tree/v0.118.0 |
 | `libtermux.so` | built from termux-app v0.118.0 `terminal-emulator/src/main/jni/termux.c`, unmodified | Apache-2.0 (`Apache-2.0.txt`) | `app/src/main/cpp/termux.c` in the Cinder Lite repository |
+| Shizuku API (`dev.rikka.shizuku:api`, `provider`) | 13.1.5 | MIT (`Shizuku-API-LICENSE.txt`) | https://github.com/RikkaApps/Shizuku-API |
 | Kotlin standard library, AndroidX annotation | per build | Apache-2.0 (`Apache-2.0.txt`) | https://github.com/JetBrains/kotlin, https://android.googlesource.com/platform/frameworks/support |
 
 ## Alpine Linux minirootfs (`rootfs.tgz`)

@@ -48,9 +48,11 @@ android {
             // build/outputs/mapping/release/mapping.txt to read its stack traces.
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
+    buildFeatures { aidl = true }   // IShellService, the Shizuku user service's interface
 
     // targetSdk 28 is deliberate (see above) and this app is never published to Play.
     lint { disable += "ExpiredTargetSdkVersion" }
@@ -80,4 +82,7 @@ kotlin { jvmToolchain(17) }
 
 dependencies {
     implementation(libs.termux.terminal.view)
+    // Optional adb-shell access through the Shizuku app (⋮ → Shizuku); see ShizukuBridge.
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 }

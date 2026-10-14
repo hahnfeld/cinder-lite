@@ -57,6 +57,7 @@ class SessionService : Service() {
                 }
             }
         }.apply { startWatching() }
+        ShizukuBridge.start(this)   // no-op unless turned on in ⋮ → Shizuku
     }
 
     /** Reads a request file and removes it. */
