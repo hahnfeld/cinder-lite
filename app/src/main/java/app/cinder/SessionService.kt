@@ -29,7 +29,7 @@ import kotlin.concurrent.thread
  *
  * It also handles the requests the sandbox's helper scripts leave in home/.cinder while sessions
  * run: xdg-open's URLs (OAuth login), termux-install's ask for the full set of Android libraries,
- * and Claude Code's own notifications (from the cinder-notify hook), which become phone
+ * and Claude Code's own notifications (from the hooks in assets/claude-settings.json), which become phone
  * notifications while the app isn't on screen. One watcher for all three: Android delivers a
  * directory's events to only one FileObserver per process.
  */

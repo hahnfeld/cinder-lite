@@ -54,10 +54,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private lateinit var ctrlKey: Button
     private var ctrl = false
     private var fontSize = 0
-    // Ask for the keyboard as soon as the window has focus — not when the session attaches, which
-    // waits on sandbox startup. Before focus, Android would defer it to the first touch and slide it
-    // up mid-tap, moving the key row so that tap missed.
-    private var keyboardPending = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -181,12 +177,15 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         if (hasWindowFocus()) showKeyboard()
     }
 
+    /**
+     * Bring the keyboard up whenever the window gets focus with a terminal showing: at launch, and
+     * on every return to the app, where Android won't restore it by itself. Asking any earlier
+     * (before focus) makes Android defer it to the first touch and slide it up mid-tap, moving
+     * the key row so that tap misses.
+     */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && keyboardPending && terminal.visibility == View.VISIBLE) {
-            keyboardPending = false
-            showKeyboard()
-        }
+        if (hasFocus && terminal.visibility == View.VISIBLE) showKeyboard()
     }
 
     private fun showLog() {

@@ -1,6 +1,0 @@
-#!/bin/sh
-# Claude Code hook (see assets/claude-settings.json): hands the event's JSON (stdin) to the app,
-# which posts it as a phone notification while the app isn't on screen. Written then renamed, so
-# the app never reads a half-written file.
-mkdir -p /root/.cinder
-cat > /root/.cinder/notify-request.tmp && mv /root/.cinder/notify-request.tmp /root/.cinder/notify-request
