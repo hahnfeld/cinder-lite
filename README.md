@@ -10,14 +10,19 @@ tags:
 
 # Cinder Lite
 
-> A fork of [Cinder](https://huggingface.co/SmallAICreator/cinder) by SmallAICreator. Installs as
-> `app.cinderlite`, so it can sit alongside the original.
+**A lighter-weight fork of [Cinder](https://huggingface.co/SmallAICreator/cinder) by SmallAICreator.**
 
-**Claude Code on an Android phone, in its own terminal UI.** Anthropic's official `claude` binary
-runs inside a self-contained Linux sandbox that ships with the app, and its interactive TUI is shown
-in a real terminal emulator (Termux's). Where upstream Cinder re-renders everything natively over
-stream-json, Cinder Lite is just the sandbox, the downloader, and a terminal — three Kotlin files
-and a ~7 MB APK.
+Cinder is the project that worked out how to run Anthropic's real Claude Code CLI on an Android
+phone: a proot + Alpine sandbox, the musl binary, the targetSdk 28 trick, the SysV-IPC workaround for
+`apk`, and a full native chat UI on top. All of that groundwork is Cinder's, and this fork keeps its
+history (upstream is the first 24 commits).
+
+Cinder Lite keeps Cinder's sandbox and drops its custom UI. Instead of driving `claude --print` over
+stream-json and re-rendering the conversation in Jetpack Compose, it shows **Claude Code's own
+terminal UI in a real terminal emulator** (Termux's). Everything the TUI already does (model
+picker, permission prompts, `/resume`, slash commands) comes from Claude Code itself, so the app
+is just the sandbox, a verified downloader and a terminal: three Kotlin files and a ~4.5 MB APK.
+It installs as `app.cinderlite`, so it can sit alongside the original.
 
 > Unofficial and unaffiliated with Anthropic. Sideload only. arm64-v8a, Android 11+.
 
@@ -40,6 +45,41 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 
 <br>
 
+## What changed from Cinder
+
+|  | Cinder | Cinder Lite |
+|---|---|---|
+| UI | Native Compose chat transcript, tool cards, diffs, markdown/LaTeX | Claude Code's own TUI in Termux's terminal view |
+| Talks to Claude via | `claude --print` + stream-json | An interactive PTY session |
+| Model, permissions, history | App's own pickers and session store | Claude Code's `/model`, `/permissions`, `/resume` |
+| Shell | One-shot commands on Android's host shell | A real bash in the sandbox, kept alongside Claude |
+| Phone files | Upload/export buttons | Shared storage mounted at `/sdcard` |
+| Claude Code install | Latest from npm, unverified | Pinned release, sha512-verified, self-updater off |
+| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,150 lines in 3 Kotlin files |
+| Release APK | ~33 MB (debug) | ~4.5 MB, signed, R8-shrunk |
+
+**Removed:** the stream-json bridge and transcript UI, markdown/LaTeX rendering, model/effort/
+permission pickers, the session-history drawer, the custom JNI PTY library, the in-app `notify`,
+`preview` and `install-apk` bridges, file upload/export, voice dictation, the diagnostics screen and
+the 32-bit proot loader.
+
+**Added or changed:**
+- Two terminals, Claude and a shell, switched from the ⋮ menu without losing either.
+- An extra-keys row for what phone keyboards lack: esc, tab, ⇧tab, ctrl, arrows.
+- `/login` opens the phone's browser through an `xdg-open` shim limited to http(s) links.
+- First-run setup that can't run twice at once, resumes after interruption, shows download and
+  install progress, and preinstalls bash, git, ripgrep, Python, Node.js and common tools.
+- Sandbox helper scripts live as real files in `assets/helpers/` instead of Kotlin strings.
+- `apk` reports real failures (exit codes) and streams its output; edge/testing repos are opt-in.
+- Android build tools on demand without Gradle or duplicate JDKs: `javac` → `d8` → `aapt2` →
+  `apksigner`, verified by building and installing an APK on a phone.
+- Device fixes: a kernel panic on Android 15 from the staged linker's path length, the Android
+  linker's config warning, 16 KB page-size support (`libtermux.so` built from source).
+- Updated toolchain and runtime: AGP 9.4, Gradle 9.8, Kotlin 2.4, compileSdk 37 (Android 17),
+  proot 5.1.107.96, talloc 2.5.0, Alpine 3.24.2. Third-party licences ship in the APK.
+
+<br>
+
 ## Features
 
 - **The real Claude Code TUI** — model picker, permission prompts, `/resume`, slash commands and
@@ -56,7 +96,7 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 - **Package management without root** — `apk add`, `npm -g`, `pip install`, plus Android build and
   APK decompile tools
 
-**Storage:** the APK is ~7 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
+**Storage:** the APK is ~4.5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
 is ~240 MB, plus the rootfs and base tools). Installing the Android toolchains adds ~200 MB of the
 device's own libraries plus the tools themselves.
 
@@ -68,8 +108,9 @@ own permission prompts accordingly.
 
 ## The engineering: six problems worth writing down
 
-Most of the work (done upstream in Cinder) was making a 250 MB Linux binary run on Android at all.
-Each of these first presented as something unrelated.
+Most of this work was done upstream in Cinder (problems 1–5): making a 250 MB Linux binary run on
+Android at all. Number 6 turned up while testing this fork. Each of these first presented as
+something unrelated.
 
 ### 1. The CLI is dynamically linked against musl
 
@@ -195,7 +236,8 @@ instead.
 
 ## Licensing and attribution
 
-Application code in this repository is MIT licensed. The APK bundles open-source components —
+Cinder Lite is a fork of [Cinder](https://huggingface.co/SmallAICreator/cinder) by SmallAICreator and
+keeps its MIT license (see `LICENSE`); application code in this repository is MIT licensed. The APK bundles open-source components —
 proot (GPL-2.0), libtalloc (LGPL-3.0), libandroid-shmem (BSD-3-Clause), the Alpine Linux 3.24.2
 minirootfs (busybox and apk-tools GPL-2.0, musl MIT, …) and Termux terminal-view/terminal-emulator
 (Apache-2.0). Their versions, exact source links and license texts are in
