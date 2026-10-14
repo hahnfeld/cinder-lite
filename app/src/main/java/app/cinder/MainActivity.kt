@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognizerIntent
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -27,6 +28,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import com.termux.terminal.KeyHandler
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
@@ -220,7 +222,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(0, sp(10f), 0, sp(10f))   // nine keys share a phone's width; keep the row short
+            setPadding(0, sp(10f), 0, sp(10f))   // ten keys share a phone's width; keep the row short
             maxLines = 1
             setTextColor(Color.LTGRAY)
             gravity = Gravity.CENTER
@@ -240,6 +242,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         key("↑", send(KeyEvent.KEYCODE_DPAD_UP))
         key("↓", send(KeyEvent.KEYCODE_DPAD_DOWN))
         key("→", send(KeyEvent.KEYCODE_DPAD_RIGHT))
+        key("🎤") { listen() }
         key("⋮") { menu(it) }
     }
 
@@ -258,6 +261,24 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             true
         }
     }.show()
+
+    /**
+     * Voice typing through the phone's own speech recognizer (no microphone permission here; the
+     * recognizer app handles that). What it hears is pasted into the terminal that's showing.
+     */
+    private fun listen() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        runCatching { startActivityForResult(intent, VOICE) }
+            .onFailure { Toast.makeText(this, "No speech recognizer on this phone", Toast.LENGTH_SHORT).show() }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != VOICE || resultCode != RESULT_OK) return
+        val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return
+        current?.emulator?.paste(text)
+    }
 
     private fun showKeyboard() {
         terminal.requestFocus()
@@ -355,6 +376,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     companion object {
         private const val TAG = "cinder"
         private const val STORAGE = Manifest.permission.WRITE_EXTERNAL_STORAGE
+        private const val VOICE = 2
         // Claude Code can't verify who owns its default messaging-socket directory under proot (its
         // uid reads as the kernel overflow uid), so it turns cross-session messaging off and warns.
         // An explicit socket path (one per process, like its default) skips that check.

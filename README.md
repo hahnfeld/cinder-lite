@@ -41,7 +41,7 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 
 | Layer | What it is |
 |---|---|
-| UI | Termux `terminal-view` showing the `claude` TUI, plus a row of keys phones lack (esc, tab, ⇧tab, ctrl, arrows) and a ⋮ menu |
+| UI | Termux `terminal-view` showing the `claude` TUI, plus a row of keys phones lack (esc, tab, ⇧tab, ctrl, arrows), a 🎤 voice-typing key and a ⋮ menu |
 | Sandbox | proot + an Alpine Linux 3.24 (musl, aarch64) rootfs, in app-private storage; phone storage at `/sdcard` |
 | Engine | Anthropic's `claude` binary, the latest release — **downloaded at runtime and verified, never bundled**; it updates itself |
 | Auth | The CLI's own `/login`. Its browser hand-off goes through an `xdg-open` shim that opens the phone's browser |
@@ -68,7 +68,8 @@ the 32-bit proot loader.
 
 **Added or changed:**
 - Two terminals, Claude and a shell, switched from the ⋮ menu without losing either.
-- An extra-keys row for what phone keyboards lack: esc, tab, ⇧tab, ctrl, arrows.
+- An extra-keys row for what phone keyboards lack: esc, tab, ⇧tab (Claude Code's permission-mode
+  switch), ctrl, arrows, and 🎤 for voice typing through the phone's own speech recognizer.
 - `/login` opens the phone's browser through an `xdg-open` shim limited to http(s) links.
 - First-run setup that can't run twice at once, resumes after interruption, shows download and
   install progress, and preinstalls bash, git, ripgrep, Python, Node.js and common tools.
