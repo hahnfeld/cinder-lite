@@ -1,6 +1,6 @@
 #!/bin/sh
 # xdg-open <url> — the sandbox can't open a browser, so leave the URL where the app is
-# watching for it (MainActivity's FileObserver). Written then renamed, so the app never
+# watching for it (SessionService's FileObserver). Written then renamed, so the app never
 # reads a half-written file.
 
 mkdir -p /root/.cinder

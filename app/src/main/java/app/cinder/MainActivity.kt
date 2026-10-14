@@ -9,9 +9,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
-import android.net.Uri
 import android.os.Bundle
-import android.os.FileObserver
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognizerIntent
@@ -35,7 +33,6 @@ import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
-import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -57,7 +54,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private lateinit var ctrlKey: Button
     private var ctrl = false
     private var fontSize = 0
-    private var watcher: FileObserver? = null
     private var keyboardPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,8 +86,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             addView(keysRow(), LinearLayout.LayoutParams(-1, -2))
         })
 
-        watchRequests()
-
         val live = current
         when {
             busy.get() -> showLog()                // setup running from an earlier activity
@@ -106,8 +100,19 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         if (sessions.isEmpty()) boot()
     }
 
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        // Back in the app: Claude's alert has done its job.
+        SessionService.clearAlert(this)
+    }
+
+    override fun onPause() {
+        visible = false
+        super.onPause()
+    }
+
     override fun onDestroy() {
-        watcher?.stopWatching()
         if (ui === this) ui = null
         super.onDestroy()
     }
@@ -187,39 +192,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         logView.text = setupLog
         terminal.visibility = View.INVISIBLE
         logScroll.visibility = View.VISIBLE
-    }
-
-    /**
-     * Watches home/.cinder for requests the sandbox's helper scripts leave there: xdg-open's URLs
-     * (OAuth login) and termux-install's ask for the full set of Android libraries.
-     */
-    private fun watchRequests() {
-        val dir = File(sandbox.home, ".cinder").apply { mkdirs() }
-        watcher = object : FileObserver(dir, MOVED_TO or CLOSE_WRITE) {
-            override fun onEvent(event: Int, path: String?) {
-                when (path) {
-                    "open-request" -> {
-                        val file = File(dir, path)
-                        val url = runCatching { file.readText().trim() }.getOrDefault("")
-                        file.delete()
-                        val uri = Uri.parse(url)
-                        // Only web pages: anything in the sandbox can call xdg-open, and other
-                        // schemes reach payment, SMS, and other apps' deep links.
-                        if (uri.scheme == "https" || uri.scheme == "http") runOnUiThread {
-                            runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
-                        }
-                    }
-                    "stage-request" -> {
-                        File(dir, path).delete()
-                        thread {
-                            runCatching { sandbox.stageAndroidRuntime(full = true) }
-                                .onFailure { Log.e(TAG, "staging Android libraries failed", it) }
-                            File(dir, "stage-done").writeText("")
-                        }
-                    }
-                }
-            }
-        }.apply { startWatching() }
     }
 
     // ---------------- extra keys ----------------
@@ -391,9 +363,11 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         // Claude Code can't verify who owns its default messaging-socket directory under proot (its
         // uid reads as the kernel overflow uid), so it turns cross-session messaging off and warns.
         // An explicit socket path (one per process, like its default) skips that check.
+        // --settings adds the hooks that turn Claude's notifications into phone notifications
+        // (assets/claude-settings.json), without touching the user's own settings files.
         private const val CLAUDE =
             "mkdir -p -m 700 /tmp/cc-socks && exec /root/.local/bin/claude --messaging-socket-path /tmp/cc-socks/\$\$.sock " +
-                "--append-system-prompt \"\$(cat /usr/local/libexec/cinder-brief.md)\""
+                "--settings /usr/local/libexec/cinder-settings.json --append-system-prompt \"\$(cat /usr/local/libexec/cinder-brief.md)\""
         // Not a login shell: Alpine's /etc/profile would reset PATH and drop the sandbox's tools.
         // $SHELL is bash once installed, busybox sh before that — so a shell works for recovery too.
         private const val SHELL = "exec \$SHELL"
@@ -413,6 +387,9 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         private var shown = Tab.Claude
         private val current get() = sessions[shown]
         private var ui: MainActivity? = null
+
+        /** Whether the app is on screen; Claude's alerts only become phone notifications when not. */
+        @Volatile var visible = false
 
         private fun tabOf(s: TerminalSession) = sessions.entries.find { it.value === s }?.key
         private fun finishAll() = sessions.values.forEach { it.finishIfRunning() }

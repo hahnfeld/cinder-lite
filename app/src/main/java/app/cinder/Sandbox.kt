@@ -86,7 +86,7 @@ class Sandbox(private val ctx: Context) {
      *
      * By default that's just what nested proot (sudo, apk) needs — a few MB. [full] copies the
      * device's whole bionic library set (~200 MB), which only Termux binaries need; termux-install
-     * asks the app for it through a request file (see MainActivity.watchRequests).
+     * asks the app for it through a request file (see SessionService).
      */
     fun stageAndroidRuntime(full: Boolean = false) {
         listOf(androidLib64, androidLibexec, shims).forEach { it.mkdirs() }
@@ -357,13 +357,14 @@ class Sandbox(private val ctx: Context) {
      * Installs the sandbox's helper commands from assets/helpers/ — sudo, the apk shim, xdg-open,
      * the Android-toolchain installers and friends (each script documents itself). bin/ is
      * /usr/local/bin; shims/ is first on PATH, for wrappers that must shadow a real binary
-     * (proot, getprop). Plus Claude's system-prompt brief, and a linker config for the staged
+     * (proot, getprop). Plus Claude's system-prompt brief and notification hooks, and a linker config for the staged
      * bionic linker (see assets/linkerconfig/ld.config.txt).
      */
     fun writeHelpers() {
         ensureLayout()
         shims.mkdirs()
         copyAsset("brief.md", File(libexec, "cinder-brief.md"))
+        copyAsset("claude-settings.json", File(libexec, "cinder-settings.json"))
         copyAsset("linkerconfig/ld.config.txt", File(rootfs, "linkerconfig/ld.config.txt"))
         for ((dir, target) in listOf("bin" to bin, "shims" to shims)) {
             for (name in ctx.assets.list("helpers/$dir").orEmpty()) {

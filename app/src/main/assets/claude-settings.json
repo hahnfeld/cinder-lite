@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "Notification": [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/cinder-notify" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "/usr/local/bin/cinder-notify" }] }]
+  }
+}

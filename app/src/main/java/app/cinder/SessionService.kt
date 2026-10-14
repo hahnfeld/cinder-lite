@@ -7,8 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
+import org.json.JSONObject
+import java.io.File
+import kotlin.concurrent.thread
 
 /**
  * Keeps Claude Code (and a first-run download) alive while the app is in the background.
@@ -21,10 +26,51 @@ import android.os.PowerManager
  * The wake lock is a separate problem from the same family: importance stops the process being
  * killed, but Doze can still suspend the CPU out from under it on an idle screen-off phone. It's
  * bounded, and renewed each time a session (re)starts.
+ *
+ * It also handles the requests the sandbox's helper scripts leave in home/.cinder while sessions
+ * run: xdg-open's URLs (OAuth login), termux-install's ask for the full set of Android libraries,
+ * and Claude Code's own notifications (from the cinder-notify hook), which become phone
+ * notifications while the app isn't on screen. One watcher for all three: Android delivers a
+ * directory's events to only one FileObserver per process.
  */
 class SessionService : Service() {
 
     private var lock: PowerManager.WakeLock? = null
+    private var watcher: FileObserver? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        val dir = File(filesDir, "home/.cinder").apply { mkdirs() }
+        watcher = object : FileObserver(dir, MOVED_TO or CLOSE_WRITE) {
+            override fun onEvent(event: Int, path: String?) {
+                when (path) {
+                    "open-request" -> openUrl(take(File(dir, path)).trim())
+                    "notify-request" -> {
+                        val hook = runCatching { JSONObject(take(File(dir, path))) }.getOrNull()
+                        if (hook != null && !MainActivity.visible) notifyFromHook(hook)
+                    }
+                    "stage-request" -> {
+                        File(dir, path).delete()
+                        thread {
+                            runCatching { Sandbox(applicationContext).stageAndroidRuntime(full = true) }
+                            File(dir, "stage-done").writeText("")
+                        }
+                    }
+                }
+            }
+        }.apply { startWatching() }
+    }
+
+    /** Reads a request file and removes it. */
+    private fun take(file: File) = runCatching { file.readText() }.getOrDefault("").also { file.delete() }
+
+    /** Only web pages: anything in the sandbox can call xdg-open, and other schemes reach payment,
+     *  SMS and other apps' deep links. */
+    private fun openUrl(url: String) {
+        val uri = Uri.parse(url)
+        if (uri.scheme != "https" && uri.scheme != "http") return
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -45,9 +91,33 @@ class SessionService : Service() {
     }
 
     override fun onDestroy() {
+        watcher?.stopWatching()
         lock?.let { if (it.isHeld) it.release() }
         lock = null
         super.onDestroy()
+    }
+
+    /** A Claude Code hook event: Notification (needs permission, waiting for input) or Stop (done). */
+    private fun notifyFromHook(event: JSONObject) {
+        val message = event.optString("message").ifBlank {
+            if (event.optString("hook_event_name") == "Stop") "Claude has finished" else return
+        }
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(
+            NotificationChannel(ALERT_CHANNEL, "Claude Code alerts", NotificationManager.IMPORTANCE_HIGH)
+        )
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+        )
+        nm.notify(
+            ALERT_ID, Notification.Builder(this, ALERT_CHANNEL)
+                .setContentTitle(event.optString("title").ifBlank { "Claude Code" })
+                .setContentText(message)
+                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build()
+        )
     }
 
     private fun build(): Notification {
@@ -76,6 +146,8 @@ class SessionService : Service() {
         private const val ID = 9002
         private const val ACTION_STOP = "app.cinder.STOP"
         private const val WAKE_LOCK_MS = 60 * 60 * 1000L
+        private const val ALERT_CHANNEL = "cinder-alerts"
+        private const val ALERT_ID = 9003
 
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, SessionService::class.java))
@@ -83,6 +155,10 @@ class SessionService : Service() {
 
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, SessionService::class.java))
+        }
+
+        fun clearAlert(ctx: Context) {
+            (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ALERT_ID)
         }
     }
 }
