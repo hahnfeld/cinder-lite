@@ -12,6 +12,8 @@ tags:
 
 **A lighter-weight fork of [Cinder](https://huggingface.co/SmallAICreator/cinder) by SmallAICreator.**
 
+Cinder Lite is by Matt Hahnfeld: https://github.com/hahnfeld/cinder-lite
+
 Cinder is the project that worked out how to run Anthropic's real Claude Code CLI on an Android
 phone: a proot + Alpine sandbox, the musl binary, the targetSdk 28 trick, the SysV-IPC workaround for
 `apk`, and a full native chat UI on top. All of that groundwork is Cinder's, and this fork keeps its
@@ -190,7 +192,7 @@ builds an APK full of pointer files that fails on first run. Gradle 9.8 / AGP 9.
 
 ```sh
 git lfs install            # once per machine
-git clone <this repo> && cd cinder-lite
+git clone https://github.com/hahnfeld/cinder-lite.git && cd cinder-lite
 ./gradlew assembleRelease
 adb install -r app/build/outputs/apk/release/app-release.apk
 ```
@@ -236,11 +238,19 @@ instead.
 
 ## Licensing and attribution
 
-Cinder Lite is a fork of [Cinder](https://huggingface.co/SmallAICreator/cinder) by SmallAICreator and
-keeps its MIT license (see `LICENSE`); application code in this repository is MIT licensed. The APK bundles open-source components —
-proot (GPL-2.0), libtalloc (LGPL-3.0), libandroid-shmem (BSD-3-Clause), the Alpine Linux 3.24.2
-minirootfs (busybox and apk-tools GPL-2.0, musl MIT, …) and Termux terminal-view/terminal-emulator
-(Apache-2.0). Their versions, exact source links and license texts are in
+Cinder Lite is by Matt Hahnfeld, forked from [Cinder](https://huggingface.co/SmallAICreator/cinder)
+by SmallAICreator. Both are MIT licensed; `LICENSE` carries the original Cinder copyright notice
+alongside Cinder Lite's, as the MIT license requires.
+
+A few files in this repository are under other licenses: `app/src/main/cpp/termux.c` (Apache-2.0,
+unmodified from termux-app v0.118.0), the Gradle wrapper (Apache-2.0), and the bundled binaries in
+`app/src/main/assets/`.
+
+The APK bundles open-source components: proot (GPL-2.0), libtalloc (LGPL-3.0), libandroid-shmem
+(BSD-3-Clause), the unmodified Alpine Linux 3.24.2 minirootfs (busybox, apk-tools and others under
+GPL-2.0; musl MIT; OpenSSL Apache-2.0; ca-certificates MPL-2.0; zlib), Termux terminal-view /
+terminal-emulator (Apache-2.0) and the Kotlin standard library (Apache-2.0). Exact versions, a
+per-package license list, links to corresponding source and the full license texts are in
 [`app/src/main/assets/licenses/`](app/src/main/assets/licenses/THIRD-PARTY-NOTICES.md), which ships
 inside the APK.
 

@@ -1,6 +1,7 @@
 MIT License
 
 Copyright (c) 2026 Cinder contributors
+Copyright (c) 2026 Matt Hahnfeld (Cinder Lite)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,14 +22,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 --------------------------------------------------------------------------------
-This applies to the application source in this repository only.
+Cinder Lite is a fork of Cinder (https://huggingface.co/SmallAICreator/cinder).
+The MIT license above applies to this repository's own source, except:
 
-The APK additionally bundles third-party binaries under their own licenses:
-  proot, proot loader     GPL-2.0    https://github.com/termux/proot
-  libtalloc               LGPL-3.0   https://packages.termux.dev
-  libandroid-shmem        MIT        https://github.com/termux/libandroid-shmem
-  Alpine minirootfs       GPL-2.0 / MIT and others   https://alpinelinux.org
-Sources for the GPL components are available at the URLs above.
+  app/src/main/cpp/termux.c          Apache-2.0, from termux-app v0.118.0
+                                     (https://github.com/termux/termux-app),
+                                     unmodified
+  gradlew, gradlew.bat,              Apache-2.0, the Gradle wrapper
+  gradle/wrapper/gradle-wrapper.jar  (https://gradle.org)
+  app/src/main/assets/proot,         third-party binaries under their own
+  loader, libtalloc.so.2,            licenses (GPL-2.0, LGPL-3.0, BSD-3-Clause
+  libandroid-shmem.so, rootfs.tgz    and the Alpine package licenses)
+
+Versions, licenses, source links and full license texts for everything bundled
+in the APK are in app/src/main/assets/licenses/ (THIRD-PARTY-NOTICES.md), which
+ships inside the APK.
 
 Claude Code is not bundled. It is downloaded at runtime and remains subject to
 Anthropic's terms: https://code.claude.com/docs/en/legal-and-compliance
