@@ -58,6 +58,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private var ctrl = false
     private var fontSize = 0
     private var watcher: FileObserver? = null
+    private var keyboardPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -169,7 +170,17 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         terminal.visibility = View.VISIBLE
         sessions.values.forEach { it.updateTerminalSessionClient(this) }
         terminal.attachSession(s)
-        showKeyboard()
+        // Before the window has focus, Android defers the keyboard until the first touch — and then
+        // slides it up mid-tap, moving the key row so that first tap misses. Wait for focus instead.
+        if (hasWindowFocus()) showKeyboard() else keyboardPending = true
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && keyboardPending) {
+            keyboardPending = false
+            showKeyboard()
+        }
     }
 
     private fun showLog() {
