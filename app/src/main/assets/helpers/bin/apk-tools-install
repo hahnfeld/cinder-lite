@@ -1,0 +1,60 @@
+#!/bin/sh
+# APK reverse-engineering kit: pure-Java tools on Alpine's own musl JVM.
+
+# APK tooling, all running on Alpine's own musl JVM.
+#
+# apktool, jadx and dex2jar are pure Java, so they need no native Android anything —
+# only a JVM that works. (Native Android binaries like aapt2 are handled separately by
+# android-bootstrap, which copies the bionic linker + libs in; these tools skip all of
+# that by running on Alpine's own musl JVM.)
+set -e
+LIB=/usr/local/lib
+mkdir -p "$LIB"
+
+if ! java -version >/dev/null 2>&1; then
+  echo "==> installing Alpine's JDK (musl-native HotSpot; real apk pulls the full dep tree)"
+  apk add openjdk17-jre-headless
+fi
+
+fetch() {  # url, destination
+  [ -f "$2" ] && { echo "  have $(basename "$2")"; return 0; }
+  echo "  fetching $(basename "$2")"
+  wget -q -O "$2" "$1" || { echo "  ! download failed"; rm -f "$2"; return 1; }
+}
+
+echo "==> apktool"
+fetch "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar" \
+      "$LIB/apktool.jar" || true
+
+echo "==> jadx"
+if [ ! -x /usr/local/jadx/bin/jadx ]; then
+  command -v unzip >/dev/null 2>&1 || apk add unzip >/dev/null || { echo "! could not install unzip (apk add unzip)"; exit 1; }
+  if fetch "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip" /tmp/jadx.zip; then
+    mkdir -p /usr/local/jadx && unzip -qo /tmp/jadx.zip -d /usr/local/jadx && rm -f /tmp/jadx.zip
+    chmod +x /usr/local/jadx/bin/* 2>/dev/null || true
+  fi
+else
+  echo "  have jadx"
+fi
+
+# Wrappers so the usual names work regardless of where the jars live.
+cat > /usr/local/bin/apktool <<'EOF'
+#!/bin/sh
+exec java -jar /usr/local/lib/apktool.jar "$@"
+EOF
+cat > /usr/local/bin/jadx <<'EOF'
+#!/bin/sh
+exec /usr/local/jadx/bin/jadx "$@"
+EOF
+chmod 755 /usr/local/bin/apktool /usr/local/bin/jadx
+
+echo
+echo "==> JVM check"
+java -version 2>&1 | head -3 || echo "  ! the JVM failed to start (see above)"
+echo
+echo "installed:"
+for t in java apktool jadx baksmali smali; do
+  printf '  %-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+done
+echo
+echo "baksmali <apk> [out] and smali <dir> [out.apk] are apktool, which embeds both."

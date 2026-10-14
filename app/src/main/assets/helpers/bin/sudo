@@ -1,0 +1,29 @@
+#!/bin/sh
+# Fake root by re-entering the rootfs through a nested proot -0. This is the only
+# elevation that works on Android: fakeroot needs a SysV-IPC daemon (absent from the
+# kernel), and the files are already ours anyway — apk only refuses to run unless it
+# believes it is uid 0, which -0 provides.
+#
+# The catch: proot is itself a bionic binary, and under this app's SELinux domain
+# (untrusted_app_27) its ELF interpreter /system/bin/linker64 can't be resolved — proot
+# can't sanitize /apex — so a plain `exec proot` dies with "proot: not found". The staged
+# bionic linker fixes it: invoke it EXPLICITLY as `linker64 proot ...`, which bypasses
+# PT_INTERP entirely. LD_LIBRARY_PATH supplies proot's own libs (libtalloc) + bionic libc.
+# Verified on-device with no /apex bound: real apk then installs full dependency trees.
+mkdir -p /tmp
+LNK=/usr/local/androidlibexec/linker64
+if [ -x "$LNK" ]; then
+  exec env PROOT_LOADER=/usr/local/libexec/loader \
+    PROOT_TMP_DIR=/tmp \
+    LD_LIBRARY_PATH=/usr/local/androidlib64:/usr/local/androidlib \
+    "$LNK" /usr/local/bin/proot -0 -r / \
+      -b /system:/system -b /apex:/apex -b /proc:/proc -b /dev:/dev -b /sys:/sys \
+      -w "$PWD" "$@"
+else
+  # No staged linker (e.g. rooted device / shell domain where the native interp resolves).
+  PROOT_LOADER=/usr/local/libexec/loader \
+  PROOT_TMP_DIR=/tmp LD_LIBRARY_PATH=/usr/local/androidlib \
+  exec /usr/local/bin/proot -0 -r / \
+    -b /system:/system -b /apex:/apex -b /proc:/proc -b /dev:/dev -b /sys:/sys \
+    -w "$PWD" "$@"
+fi

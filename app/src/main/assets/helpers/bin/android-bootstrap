@@ -1,0 +1,134 @@
+#!/bin/sh
+# The crux of running Android/aarch64 (bionic) binaries in here at all.
+#
+# A Termux binary like aapt2 has its ELF interpreter set to /system/bin/linker64 — which
+# on modern Android is only a symlink into /apex/com.android.runtime, a chain proot can't
+# reliably canonicalise (hence the old "can't sanitize binding /apex" and "linker64: not
+# found"). It also expects its .so files under $PREFIX/lib and the bionic partitions,
+# which likewise don't survive translation.
+#
+# The fix is to stop depending on any of that resolving: copy the REAL linker and a flat
+# set of the bionic .so files out of the bound host tree into fixed rootfs paths, then
+# rewrite every Android ELF so its interpreter and rpath point straight at them. After
+# this the binaries are self-contained and run without /apex or /system needing to work.
+
+# Make Android/aarch64 (bionic) binaries self-contained inside this rootfs. The linker
+# and flat bionic libs are staged in from the app side (proot can't read /apex under
+# this SELinux domain); this script does the patchelf pass. Safe to re-run any time an
+# Android binary reports "not found" for its loader or a library.
+set -e
+ALIB=/usr/local/androidlib64           # flat directory of bionic .so files (app-staged)
+ALIBEXEC=/usr/local/androidlibexec      # the copied dynamic linker + nested proot
+PREFIX=/data/data/com.termux/files/usr
+mkdir -p "$ALIB" "$ALIBEXEC" /usr/local/shims
+
+# By default the app stages only the few libs nested proot needs. Termux binaries need
+# the device's whole bionic set (~200 MB), which only the app can read: ask it, and wait.
+if [ ! -e "$ALIB/.full" ]; then
+  echo "asking Cinder Lite to copy the device's Android libraries (~200 MB)..."
+  mkdir -p /root/.cinder
+  rm -f /root/.cinder/stage-done
+  : > /root/.cinder/stage-request
+  n=0
+  while [ ! -e /root/.cinder/stage-done ] && [ $n -lt 300 ]; do sleep 1; n=$((n+1)); done
+  [ -e "$ALIB/.full" ] || { echo "! no answer from the app — open Cinder Lite and run this again"; exit 1; }
+fi
+[ -x "$ALIBEXEC/linker64" ] || { echo "! no linker64 staged — Android binaries can't run"; exit 1; }
+echo "linker + $(ls -1 "$ALIB" 2>/dev/null | wc -l) bionic libs staged"
+
+# patchelf lives in Alpine's community repo. The app writes both main+community into
+# /etc/apk/repositories, but if this rootfs predates that (or the file got reset), enable
+# community here too and retry — patchelf is essential to the patch pass.
+if ! command -v patchelf >/dev/null 2>&1; then
+  apk add patchelf >/dev/null 2>&1 || true
+  if ! command -v patchelf >/dev/null 2>&1; then
+    REL=$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null || echo edge)
+    REPO=/etc/apk/repositories
+    grep -q '/community' "$REPO" 2>/dev/null || \
+      echo "https://dl-cdn.alpinelinux.org/alpine/v$REL/community" >> "$REPO"
+    echo "enabling community repo and retrying patchelf..."
+    apk add patchelf 2>&1 | grep -vi 'inconsistent' | tail -2 || true
+  fi
+fi
+command -v patchelf >/dev/null 2>&1 || {
+  echo "! patchelf still unavailable (apk/network problem). Check: apk add patchelf"; exit 1; }
+RPATH="$ALIB:$PREFIX/lib"
+
+# (a) Executables and libraries under the termux prefix (aapt2 and its libraries, …). An
+#     executable gets a new interpreter AND rpath; a .so gets rpath only.
+PATCHED=0; EXES=0
+patch_tree() {
+  [ -d "$1" ] || return 0
+  for f in $(find "$1" -type f 2>/dev/null); do
+    head -c4 "$f" 2>/dev/null | grep -qa 'ELF' || continue
+    if patchelf --print-interpreter "$f" >/dev/null 2>&1; then
+      patchelf --set-interpreter "$ALIBEXEC/linker64" "$f" 2>/dev/null && EXES=$((EXES+1))
+      echo "  interp+rpath: $(basename "$f")"
+    fi
+    patchelf --set-rpath "$RPATH" "$f" 2>/dev/null && PATCHED=$((PATCHED+1))
+  done
+}
+for base in "$@" "$PREFIX/bin" "$PREFIX/lib"; do patch_tree "$base"; done
+echo "patched $PATCHED ELF file(s) under the prefix ($EXES executable interpreters rewritten)"
+
+# (b) The flat bionic libs themselves. rpath on an executable only covers ITS direct
+#     deps; a transitive dep (liblog -> libc++) resolves via the intermediate lib's own
+#     runpath. Give every flat lib an rpath back to the flat dir so the whole graph
+#     resolves with no /apex and no /system.
+n=0
+for so in "$ALIB"/*.so; do
+  [ -e "$so" ] || continue
+  patchelf --set-rpath "$ALIB" "$so" 2>/dev/null && n=$((n+1))
+done
+echo "rpath set on $n flat libs"
+
+# (c) Self-heal missing dependencies. If any installed Android executable still NEEDs a
+#     library that's in neither the flat dir nor the termux prefix, install the Termux
+#     package of the same base name (libandroid-selinux.so -> libandroid-selinux) and
+#     re-patch. Guarded so the termux-install it calls doesn't recurse back into repair.
+if [ -z "$CC_NO_REPAIR" ]; then
+  # Index every shared object already present ANYWHERE under the flat dir or the prefix,
+  # so libs that live in subdirectories (e.g. the JVM's libjvm.so under lib/jvm/…) are
+  # not falsely flagged missing — checking only $PREFIX/lib produced bogus installs.
+  find "$ALIB" "$PREFIX" -name '*.so*' -type f 2>/dev/null | sed 's#.*/##' | sort -u > /tmp/have-libs
+  miss=""
+  for f in $(find "$PREFIX/bin" "$PREFIX/lib" -maxdepth 1 -type f 2>/dev/null); do
+    head -c4 "$f" 2>/dev/null | grep -qa 'ELF' || continue
+    for need in $(patchelf --print-needed "$f" 2>/dev/null); do
+      grep -qxF "$need" /tmp/have-libs && continue
+      case " $miss " in *" $need "*) ;; *) miss="$miss $need" ;; esac
+    done
+  done
+  if [ -n "$miss" ]; then
+    # Library name -> the Termux package that ships it. Usually the same (libexpat.so.1 ->
+    # libexpat), but not always — and Termux treats several of these as part of its base system,
+    # so its packages don't declare them as dependencies at all.
+    pkg_for() {
+      case "$1" in
+        libz) echo zlib ;;
+        libcrypto|libssl) echo openssl ;;
+        libpng16) echo libpng ;;
+        libjpeg|libturbojpeg) echo libjpeg-turbo ;;
+        libicu*) echo libicu ;;
+        libncursesw|libtinfo) echo ncurses ;;
+        libreadline|libhistory) echo readline ;;
+        libc++_shared) echo libc++ ;;
+        *) echo "$1" ;;
+      esac
+    }
+    pkgs=""
+    for nlib in $miss; do pkgs="$pkgs $(pkg_for "${nlib%.so*}")"; done
+    echo "missing libs:$miss"
+    echo "installing termux packages:$pkgs"
+    CC_NO_REPAIR=1 termux-install $pkgs 2>&1 | grep -E '^[[:space:]]*[+!]' || true
+    # re-apply rpath so the newly landed libs are found by everything
+    RP="$ALIB:$PREFIX/lib"
+    for so in $(find "$PREFIX/lib" -maxdepth 1 -name '*.so*' -type f 2>/dev/null); do
+      patchelf --set-rpath "$RP" "$so" 2>/dev/null || true
+    done
+    echo "repair pass complete"
+  else
+    echo "all NEEDED libs already present"
+  fi
+fi
+echo "android-bootstrap done"

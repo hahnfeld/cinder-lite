@@ -1,0 +1,14 @@
+You are running on an Android phone inside an Alpine Linux (musl, aarch64) sandbox under proot.
+
+- The working directory /workspace is writable and persistent; /root is your home.
+- /sdcard is the phone's shared storage (present once the user has granted storage access). Save files meant for the user in /sdcard/Download, and read files they point you to from there.
+- System packages: apk add <pkg>. It runs real apk elevated via nested proot, so full dependency trees install, and it exits non-zero if a package can't be found or fetched. apk can't record what it installed here (no SysV IPC for its database lock), so apk del and apk info don't know about installed packages.
+- Repositories: Alpine stable main+community by default. Rolling packages are available on request: apk add <pkg>@edge, or <pkg>@testing for edge/testing (e.g. wine@testing).
+- Node.js and npm are preinstalled; npm install -g works (prefix /root/.npm-global, already on PATH).
+- Python 3 and pip are preinstalled; pip install puts packages in /root/.local (PIP_USER is set), also on PATH. Use python3/pip3.
+- Also preinstalled: git, ripgrep, curl, openssh-client, make, patch, zip, jq. If another language runtime is missing, install it first: apk add openjdk17 go rust.
+- To build Android apps, run android-sdk-install once: it sets up javac/java/keytool (Alpine's JDK 17), aapt2, d8, apksigner and android.jar (API 35, under $ANDROID_HOME). Build with javac -> d8 -> aapt2 link -> add classes.dex to the APK with zip -> apksigner. Google's SDK/NDK and Gradle-based Android builds can't run here (they need x86-64 tools). Termux's ecj doesn't work here (it needs dalvikvm); use javac.
+- To take an APK apart: apktool d <apk> (smali + resources), jadx <apk> (Java source). baksmali <apk> [out] and smali <dir> [out.apk] are shims onto apktool. If those are missing, run apk-tools-install once.
+- Termux/Android binaries DO run here: termux-install runs android-bootstrap, which (the first time) asks the app to copy the device's bionic libraries into the sandbox (~200 MB; the app must be open), then rewrites each binary's interpreter and rpath to use them. If an Android binary ever reports 'not found' for its loader or a library, run: android-bootstrap. Those binaries land in /data/data/com.termux/files/usr and are already on PATH. Cross-compilers: termux-install clang binutils make cmake.
+- To read device properties, run getprop by that bare name only (a wrapper on PATH): getprop lists everything, getprop ro.product.model returns one value. Never use /system/bin/getprop — it does not resolve here. There is no working dumpsys/pm/am/service either.
+- To install an APK you built, copy it to /sdcard/Download and tell the user to open it from there.

@@ -1,0 +1,101 @@
+#!/bin/sh
+# Alpine's repo has no Android build tools, and Google ships aapt2/d8/NDK as x86-64
+# Linux binaries that cannot run here at all. Termux publishes aarch64 builds of the same
+# tools for Android's own libc — and those run inside this sandbox once android-bootstrap
+# has copied the bionic linker + libs in and rewritten their ELF headers. They expect to
+# live at Termux's own prefix, so install them there.
+
+# Install Android/aarch64 packages from the Termux repo, with FULL recursive dependency
+# resolution. A Termux binary like aapt2 pulls in libfmt, libprotobuf, all of abseil,
+# etc. — missing any one is "library not found". The index is parsed once into flat
+# lookup files so the dependency closure is fast even for deep trees.
+set -e
+REPO=https://packages.termux.dev/apt/termux-main
+IDX=/tmp/termux-index
+MAP=/tmp/termux-map
+DEP=/tmp/termux-dep
+PREFIX=/data/data/com.termux/files/usr
+
+# --no-deps: install just the named packages, for ones that are only jars or scripts (e.g. d8,
+# apksigner) whose declared dependencies — Termux's own JDK — aren't wanted here.
+NODEPS=
+[ "$1" = "--no-deps" ] && { NODEPS=1; shift; }
+[ $# -gt 0 ] || { echo "usage: termux-install [--no-deps] <package>..."; exit 2; }
+command -v dpkg-deb >/dev/null 2>&1 || apk add dpkg >/dev/null 2>&1 || { echo "! could not install dpkg (apk add dpkg)"; exit 1; }
+command -v wget >/dev/null 2>&1 || apk add wget >/dev/null 2>&1 || { echo "! could not install wget (apk add wget)"; exit 1; }
+# dpkg-deb shells out to `tar --warning=...` and needs xz/zstd to decompress data.tar.*.
+# BusyBox tar (Alpine's default, now first on PATH) rejects GNU's --warning flag, so a
+# real GNU tar plus the compressors must be installed or every .deb extract fails.
+apk add tar xz zstd >/dev/null 2>&1 || true
+
+if [ ! -s "$MAP" ]; then
+  echo "fetching package index..."
+  wget -O "$IDX" "$REPO/dists/stable/main/binary-aarch64/Packages"   # several MB: show progress
+  awk '
+    /^Package: / {p=$2}
+    /^Filename: / {print p "\t" $2 > "'"$MAP"'"}
+    /^Depends: / {d=$0; sub(/^Depends: /,"",d); gsub(/\([^)]*\)/,"",d); gsub(/,/," ",d);
+                  print p "\t" d > "'"$DEP"'"}
+  ' "$IDX"
+fi
+
+# Names asked for directly must exist; dependencies may legitimately name virtual packages.
+for p in "$@"; do
+  grep -q "^$p	" "$MAP" || echo "  ! no Termux package named '$p'"
+done
+
+# Dependency closure by FIXPOINT, not recursion. A recursive resolver with shell-var
+# state (RESOLVED/ORDER) silently drops packages under busybox ash — its globals don't
+# survive the nested calls, so e.g. coreutils' libandroid-selinux went missing and the
+# binary died with "library not found". Iterating a WANT set to a fixpoint has no such
+# trap. Install order is irrelevant here: these are libraries and standalone tools, and
+# dpkg -x only extracts files (no maintainer scripts run).
+WANT=/tmp/termux-want
+printf "%s\n" "$@" | sort -u > "$WANT"
+while [ -z "$NODEPS" ]; do
+  before=$(wc -l < "$WANT")
+  while IFS= read -r p; do grep -m1 "^$p	" "$DEP" | cut -f2; done < "$WANT" \
+    | tr " " "\n" | grep -v "^$" >> "$WANT"
+  sort -u "$WANT" -o "$WANT"
+  [ "$(wc -l < "$WANT")" = "$before" ] && break
+done
+
+mkdir -p "$PREFIX/bin" "$PREFIX/lib"
+if [ -n "$NODEPS" ]; then echo "installing $(wc -l < "$WANT") package(s), no dependencies..."; else echo "installing $(wc -l < "$WANT") package(s) with all dependencies..."; fi
+while IFS= read -r p; do
+  file=$(grep -m1 "^$p	" "$MAP" | cut -f2)
+  [ -n "$file" ] || continue    # virtual/provided names have no .deb
+  if ! wget -qO /tmp/t.deb "$REPO/$file" 2>/tmp/werr; then
+    echo "  ! $p (download failed: $(head -1 /tmp/werr 2>/dev/null))"
+  # dpkg-deb -x shells out to `tar --warning=...`, a GNU flag BusyBox tar (Alpine's
+  # default) rejects. --fsys-tarfile instead streams the decompressed data tarball to
+  # stdout (using its own xz/zst handling, no tar), which we extract with a plain BusyBox
+  # tar call. Sidesteps the tar-flavour problem entirely.
+  elif ! { dpkg-deb --fsys-tarfile /tmp/t.deb > /tmp/data.tar 2>/tmp/derr && \
+           tar -xf /tmp/data.tar -C / 2>>/tmp/derr; }; then
+    echo "  ! $p (extract failed: $(head -1 /tmp/derr 2>/dev/null))"
+  else
+    echo "  + $p"
+  fi
+  rm -f /tmp/t.deb /tmp/data.tar
+done < "$WANT"
+# Termux's wrapper scripts start with #!/data/data/com.termux/files/usr/bin/sh, a path
+# that only exists inside Termux. Point the usual names at Alpine's equivalents so
+# those scripts can actually run here.
+mkdir -p "$PREFIX/bin" "$PREFIX/tmp"
+for name in sh env bash dirname basename uname sed grep awk cut head tail; do
+  if [ ! -e "$PREFIX/bin/$name" ]; then
+    real=$(command -v "$name" 2>/dev/null)
+    [ -n "$real" ] && ln -sf "$real" "$PREFIX/bin/$name"
+  fi
+done
+
+# Android binaries as shipped point their ELF interpreter at /system/bin/linker64 and
+# hunt for .so files across the bionic partitions — neither survives into this rootfs.
+# Make them self-contained: copy the linker + a flat lib set in and rewrite each ELF.
+if [ -z "$NODEPS" ]; then
+  echo "==> making Android binaries self-contained (linker + flat libs)"
+  android-bootstrap "$PREFIX/bin" "$PREFIX/lib" || echo "  ! android-bootstrap failed"
+fi
+
+echo "installed under $PREFIX (already on PATH)"

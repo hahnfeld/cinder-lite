@@ -1,0 +1,7 @@
+#!/bin/sh
+# smali <dir> [out.apk]   — reassemble a disassembled tree via apktool
+dir="$1"; out="${2:-${1%/}-rebuilt.apk}"
+[ -n "$dir" ] || { echo "usage: smali <dir> [out.apk]"; exit 2; }
+command -v apktool >/dev/null 2>&1 || { echo "apktool missing - run apk-tools-install"; exit 1; }
+echo "assembling $dir -> $out"
+exec apktool b -f -o "$out" "$dir"

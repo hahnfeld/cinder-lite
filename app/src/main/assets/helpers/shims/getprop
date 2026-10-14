@@ -1,0 +1,17 @@
+#!/bin/sh
+# getprop, out of the box. Android's /system/bin tools are labelled so that this app's
+# SELinux domain may EXEC them but not open them for reading — which is exactly what a
+# linker shim inside proot needs, so that approach fails ("unable to open file"). The app
+# PROCESS, however, can Runtime.exec getprop fine, so the app snapshots its output to
+# /root/.cinder/getprop.txt (see refreshSystemInfo, run on every sandbox launch). This shim
+# just reads that snapshot — instant, and it works without any /system access here.
+
+SNAP=/root/.cinder/getprop.txt
+[ -f "$SNAP" ] || { echo "(getprop snapshot not ready yet)"; exit 0; }
+DATA=$(cat "$SNAP")
+# getprop with no name (or a flag) lists everything; getprop <name> prints one value.
+if [ -z "$1" ] || [ "${1#-}" != "$1" ]; then
+  printf '%s\n' "$DATA"
+else
+  printf '%s\n' "$DATA" | sed -n "s/^\[$1\]: \[\(.*\)\]$/\1/p"
+fi

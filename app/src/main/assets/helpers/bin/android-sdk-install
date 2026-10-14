@@ -1,0 +1,51 @@
+#!/bin/sh
+# Assemble a working Android build toolchain (API 35) for aarch64. Takes no arguments.
+#
+#   javac, java, keytool  Alpine's OpenJDK 17 — musl-native, runs in this sandbox like any
+#                         other Alpine package.
+#   aapt2                 Termux's aarch64 build: a bionic binary, made runnable here by
+#                         android-bootstrap (termux-install runs it).
+#   d8, apksigner         Termux's packages, which are just a jar plus a `java -jar` wrapper;
+#                         installed without their dependencies (Termux's own JDK) and run on
+#                         Alpine's JDK instead.
+#   android.jar           Straight from Google — it's plain Java.
+#
+# Build: javac -> d8 -> aapt2 link -> zip classes.dex in -> apksigner. Google's own
+# build-tools and NDK are x86-64 binaries and can't run on this device, and Gradle-based
+# Android builds fail for the same reason (the Android Gradle Plugin fetches x86-64 aapt2).
+# Termux's ecj needs Android's dalvikvm, which isn't available here — use javac.
+set -e
+API=35
+SDK=${ANDROID_HOME:-/root/android-sdk}
+PLATFORM_URL=https://dl.google.com/android/repository/platform-35_r02.zip
+
+echo "==> JDK 17 (Alpine)"
+command -v javac >/dev/null 2>&1 || apk add openjdk17-jdk || { echo "! could not install openjdk17-jdk"; exit 1; }
+
+echo "==> aapt2 (Termux aarch64 build)"
+termux-install aapt2
+
+echo "==> d8 and apksigner (jars only)"
+termux-install --no-deps d8 apksigner
+
+echo "==> android.jar for API $API (from Google)"
+if [ ! -f "$SDK/platforms/android-$API/android.jar" ]; then
+  command -v unzip >/dev/null 2>&1 || apk add unzip >/dev/null || { echo "! could not install unzip (apk add unzip)"; exit 1; }
+  wget -O /tmp/platform.zip "$PLATFORM_URL"   # ~60 MB: show progress
+  rm -rf /tmp/platform-x && mkdir -p /tmp/platform-x
+  unzip -q /tmp/platform.zip -d /tmp/platform-x
+  src=$(find /tmp/platform-x -name android.jar | head -1)
+  [ -n "$src" ] || { echo "android.jar not found in archive"; exit 1; }
+  mkdir -p "$SDK/platforms/android-$API"
+  cp "$src" "$SDK/platforms/android-$API/android.jar"
+  rm -rf /tmp/platform.zip /tmp/platform-x
+fi
+
+echo
+echo "ANDROID_HOME=$SDK"
+echo "  android.jar  $SDK/platforms/android-$API/android.jar"
+for t in javac keytool aapt2 d8 apksigner; do
+  printf '  %-10s %s\n' "$t" "$(command -v $t || echo MISSING)"
+done
+echo
+echo "Build: javac -> d8 -> aapt2 link -> zip classes.dex -> apksigner."

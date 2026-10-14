@@ -3,51 +3,41 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Lets the agent install an APK it built: the app hands the file to the system package
-         installer, which still asks the user to confirm. -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Lets the agent schedule a notification to ping the user after a delay. -->
+    <!-- Shared storage, bound into the sandbox at /sdcard. With targetSdk 28 this is the legacy
+         full-access permission, the same one Termux's termux-setup-storage relies on. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Package visibility: without this, resolveActivity() for the speech recognizer returns
-         null on Android 11+ and the dictate button would silently never appear. -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
-        </intent>
-    </queries>
-
     <application
         android:allowBackup="false"
-        android:label="Cinder"
+        android:label="Cinder Lite"
         android:icon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Cinder">
 
+        <!-- configChanges: rotating, folding or changing font scale / locale just resizes the
+             terminal (SIGWINCH) instead of recreating the activity. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Cinder">
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Holds the process alive while a turn is in flight: the CLI is a child of this
-             process, so being backgrounded is what kills a long run. -->
+        <!-- Holds the process alive while Claude Code runs: the CLI is a child of this process,
+             so being backgrounded is what would kill it. -->
         <service
-            android:name=".EngineService"
+            android:name=".SessionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <!-- Fires the agent's scheduled notification when its alarm goes off. -->
-        <receiver
-            android:name=".NotifyReceiver"
-            android:exported="false" />
     </application>
 </manifest>

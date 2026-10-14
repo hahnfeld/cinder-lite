@@ -1,0 +1,7 @@
+#!/bin/sh
+# xdg-open <url> — the sandbox can't open a browser, so leave the URL where the app is
+# watching for it (MainActivity's FileObserver). Written then renamed, so the app never
+# reads a half-written file.
+
+mkdir -p /root/.cinder
+printf '%s\n' "$1" > /root/.cinder/open-request.tmp && mv /root/.cinder/open-request.tmp /root/.cinder/open-request

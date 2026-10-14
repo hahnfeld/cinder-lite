@@ -1,0 +1,22 @@
+# Linker config for Android (bionic) binaries in the sandbox: sudo/apk's nested proot and
+# Termux tools, all run through the staged linker64. Android's real config (/linkerconfig) is
+# unreadable to apps; without one the linker warns on every exec and falls back to a single
+# unrestricted namespace. This spells out that same behaviour, so nothing resolves differently.
+# Executables are matched by directory; "/" itself can't be used (the trailing slash is stripped,
+# leaving an empty value), so list every top-level place a bionic binary might run from.
+dir.sandbox = /usr
+dir.sandbox = /data
+dir.sandbox = /bin
+dir.sandbox = /sbin
+dir.sandbox = /root
+dir.sandbox = /workspace
+dir.sandbox = /tmp
+dir.sandbox = /opt
+dir.sandbox = /sdcard
+dir.sandbox = /system
+dir.sandbox = /apex
+dir.sandbox = /vendor
+
+[sandbox]
+namespace.default.isolated = false
+namespace.default.search.paths = /usr/local/androidlib64:/system/lib64

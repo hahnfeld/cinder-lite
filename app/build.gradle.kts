@@ -1,79 +1,83 @@
 import java.util.Properties
 
 plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.jetbrains.kotlin.android)
-    alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.android.application)   // AGP 9: Kotlin support is built in
 }
 
 // Lets a checkout install over an app that was first sideloaded under a different id, without
 // that id living in the published source. Set `cinder.applicationId=...` in local.properties
-// (gitignored); everyone else builds app.cinder.
+// (gitignored); everyone else builds app.cinderlite.
 val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 
 android {
     namespace = "app.cinder"
-    compileSdk = 36
+    compileSdk = 37
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        applicationId = localProperties.getProperty("cinder.applicationId") ?: "app.cinder"
+        applicationId = localProperties.getProperty("cinder.applicationId") ?: "app.cinderlite"
         minSdk = 30
         // Deliberately 28: apps targeting API 29+ cannot exec binaries out of their own
         // writable data directory, which is exactly what the sandbox needs to do. Termux
         // used the same approach. Sideload only — Play Store requires a current target.
         targetSdk = 28
-        versionCode = 33
-        versionName = "1.18.2"
+        versionCode = 35
+        versionName = "2.1.0-lite"
         ndk { abiFilters += "arm64-v8a" }
-        externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    // Release signing comes from local.properties (gitignored), never from the repo:
+    //   cinder.storeFile=keystore/cinder-lite-release.jks   (relative to the project root)
+    //   cinder.storePassword=…  cinder.keyAlias=…  cinder.keyPassword=…
+    // Every update must be signed with the same key, or it won't install over the previous one.
+    val releaseSigning = localProperties.getProperty("cinder.storeFile")?.let { store ->
+        signingConfigs.create("release") {
+            storeFile = rootProject.file(store)
+            storePassword = localProperties.getProperty("cinder.storePassword")
+            keyAlias = localProperties.getProperty("cinder.keyAlias")
+            keyPassword = localProperties.getProperty("cinder.keyPassword")
         }
     }
-
     buildTypes {
         release {
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = releaseSigning
+            // R8 drops unused Kotlin/library code (~2 MB). The stock rules keep classes with native
+            // methods by name, which is what libtermux's JNI entry points need. Keep each release's
+            // build/outputs/mapping/release/mapping.txt to read its stack traces.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 
-    buildFeatures { compose = true }
+    // targetSdk 28 is deliberate (see above) and this app is never published to Play.
+    lint { disable += "ExpiredTargetSdkVersion" }
 
     // Assets are binaries and an already-gzipped tarball. Leaving aapt to compress them makes
     // AssetManager refuse to stream anything over ~1 MB, which is what broke the rootfs unpack.
     androidResources {
-        noCompress += listOf("tgz", "so", "2", "loader", "loader32", "proot")
+        noCompress += listOf("tgz", "so", "2", "loader", "proot")
+    }
+
+    // libtermux, built from source so it's 16 KB page-aligned (see src/main/cpp/CMakeLists.txt).
+    externalNativeBuild {
+        cmake { path = file("src/main/cpp/CMakeLists.txt") }
+    }
+    // terminal-emulator's AAR ships its own (4 KB-aligned) libtermux.so; ours is packaged first.
+    packaging {
+        jniLibs { pickFirsts += "lib/*/libtermux.so" }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlin { jvmToolchain(17) }
-
-    packaging {
-        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
-    }
 }
 
+kotlin { jvmToolchain(17) }
+
 dependencies {
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
-    implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.ui)
-    implementation(libs.androidx.ui.graphics)
-    implementation(libs.androidx.ui.tooling.preview)
-    implementation(libs.androidx.material3)
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.4")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    debugImplementation(libs.androidx.ui.tooling)
+    implementation(libs.termux.terminal.view)
 }

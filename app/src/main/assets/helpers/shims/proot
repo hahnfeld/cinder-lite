@@ -1,0 +1,14 @@
+#!/bin/sh
+# A nested-safe `proot` for the agent. /usr/local/shims is first on PATH, so this shadows the
+# native /usr/local/bin/proot (which the app launches the OUTER sandbox with and must stay
+# unpatched). Same explicit-linker trick as sudo — no patchelf needed.
+
+LNK=/usr/local/androidlibexec/linker64
+if [ -x "$LNK" ]; then
+  exec env PROOT_LOADER=/usr/local/libexec/loader \
+    PROOT_TMP_DIR=/tmp \
+    LD_LIBRARY_PATH=/usr/local/androidlib64:/usr/local/androidlib \
+    "$LNK" /usr/local/bin/proot "$@"
+else
+  exec /usr/local/bin/proot "$@"
+fi

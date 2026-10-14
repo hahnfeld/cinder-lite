@@ -1,0 +1,10 @@
+#!/bin/sh
+# Familiar names for the two operations everyone reaches for. apktool embeds smali and
+# baksmali, so these are shims onto it rather than separate binaries.
+
+# baksmali <file.apk|file.dex> [outdir]   — disassemble to smali via apktool
+in="$1"; out="${2:-${1%.*}-smali}"
+[ -n "$in" ] || { echo "usage: baksmali <apk|dex> [outdir]"; exit 2; }
+command -v apktool >/dev/null 2>&1 || { echo "apktool missing - run apk-tools-install"; exit 1; }
+echo "disassembling $in -> $out"
+exec apktool d -f -o "$out" "$in"

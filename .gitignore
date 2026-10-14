@@ -6,3 +6,8 @@ build/
 local.properties
 *.iml
 .DS_Store
+
+# release signing — never commit
+keystore/
+*.jks
+*.keystore
