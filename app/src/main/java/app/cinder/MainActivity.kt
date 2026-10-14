@@ -118,7 +118,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     // ---------------- setup + launch ----------------
 
     /**
-     * Gets the sandbox ready — unpacking the bundled runtime, downloading the pinned Claude Code,
+     * Gets the sandbox ready — unpacking the bundled runtime, installing the latest Claude Code,
      * installing the base tools — and then starts Claude. Each step is skipped when already done, so on an
      * installed device this goes straight to launching. Only one setup runs at a time.
      */
@@ -135,7 +135,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             try {
                 if (reset) { log("resetting the sandbox…"); sandbox.reset() }
                 sandbox.bootstrap(::log)
-                if (sandbox.needsClaude) sandbox.downloadClaude(::log)
+                if (!sandbox.hasClaude) sandbox.installClaude(::log)
                 if (!sandbox.hasBaseTools) sandbox.installBaseTools(::log)
                 launch(sandbox, Tab.Claude)
             } catch (e: Exception) {
@@ -359,7 +359,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         // uid reads as the kernel overflow uid), so it turns cross-session messaging off and warns.
         // An explicit socket path (one per process, like its default) skips that check.
         private const val CLAUDE =
-            "mkdir -p -m 700 /tmp/cc-socks && exec /usr/local/bin/claude --messaging-socket-path /tmp/cc-socks/\$\$.sock " +
+            "mkdir -p -m 700 /tmp/cc-socks && exec /root/.local/bin/claude --messaging-socket-path /tmp/cc-socks/\$\$.sock " +
                 "--append-system-prompt \"\$(cat /usr/local/libexec/cinder-brief.md)\""
         // Not a login shell: Alpine's /etc/profile would reset PATH and drop the sandbox's tools.
         // $SHELL is bash once installed, busybox sh before that — so a shell works for recovery too.

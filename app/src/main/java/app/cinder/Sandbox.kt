@@ -30,9 +30,10 @@ import java.util.zip.GZIPInputStream
  * storage permission.
  *
  *   files/                    (guest path inside the sandbox in parentheses)
- *     home/            $HOME (/root) — config, caches, the claude login credential
+ *     home/            $HOME (/root) — config, caches, the claude login credential, and Claude
+ *                      Code itself (its native install: .local/bin/claude -> .local/share/claude)
  *     workspace/       the agent's cwd (/workspace)
- *     bin/             proot, claude, and the helper scripts (/usr/local/bin)
+ *     bin/             proot and the helper scripts (/usr/local/bin)
  *     lib/             proot's libraries: libtalloc, libandroid-shmem (/usr/local/androidlib)
  *     libexec/         proot's loader and Claude's system-prompt brief (/usr/local/libexec)
  *     lx/              the staged bionic linker64 (/usr/local/androidlibexec) — see [androidLibexec]
@@ -136,9 +137,16 @@ class Sandbox(private val ctx: Context) {
     /** Absolute path of an imported executable, or null when it isn't installed yet. */
     fun tool(name: String): File? = File(bin, name).takeIf { it.exists() && it.canExecute() }
 
-    private val claudeVersionFile get() = File(bin, "claude.version")
-    private val hasPinnedClaude
-        get() = tool("claude") != null && runCatching { claudeVersionFile.readText() }.getOrNull() == CLAUDE_VERSION
+    /**
+     * Claude Code's native install, as `claude install` lays it out under $HOME: a symlink to the
+     * current version (a guest path, so it doesn't resolve on the host side) plus the versions dir.
+     * Claude Code updates itself in place there.
+     */
+    private val claudeLink get() = File(home, ".local/bin/claude")
+    private val claudeVersions get() = File(home, ".local/share/claude")
+    val hasClaude
+        get() = Files.isSymbolicLink(claudeLink.toPath()) &&
+            File(claudeVersions, "versions").list()?.isNotEmpty() == true
 
     fun env(): Array<String> {
         val path = listOf(bin.absolutePath, "/system/bin", "/system/xbin").joinToString(":")
@@ -312,9 +320,6 @@ class Sandbox(private val ctx: Context) {
             append("export PYTHONUSERBASE=/root/.local; ")
             // Nothing in here can open a browser; xdg-open hands the URL to the app (OAuth login).
             append("export BROWSER=xdg-open; ")
-            // The app pins a verified Claude Code release (see CLAUDE_VERSION); a self-update would
-            // replace it with an unverified one in a location the app doesn't manage.
-            append("export DISABLE_AUTOUPDATER=1; ")
         }
         // The phone's shared storage, once the user has granted the (legacy, targetSdk 28)
         // storage permission — the same access Termux's termux-setup-storage gives.
@@ -377,13 +382,12 @@ class Sandbox(private val ctx: Context) {
 
     private val bootstrapStamp get() = File(root, ".bootstrap-v1")
 
-    /** Everything Claude Code needs before it can start: runtime, the pinned binary, base tools. */
-    val ready get() = bootstrapStamp.exists() && hasPinnedClaude && hasBaseTools
-    val needsClaude get() = !hasPinnedClaude
+    /** Everything Claude Code needs before it can start: runtime, Claude Code itself, base tools. */
+    val ready get() = bootstrapStamp.exists() && hasClaude && hasBaseTools
 
     /**
      * Installs the runtime that ships inside the APK: proot with its loader and libraries, and the
-     * Alpine rootfs. Claude Code itself is deliberately not bundled — see [downloadClaude].
+     * Alpine rootfs. Claude Code itself is deliberately not bundled — see [installClaude].
      * The stamp is written last, so a rootfs unpack that was interrupted starts over next time.
      */
     fun bootstrap(log: (String) -> Unit) {
@@ -423,51 +427,60 @@ class Sandbox(private val ctx: Context) {
 
     /**
      * Back to a fresh install: the rootfs (and everything installed into it), the staged Android
-     * runtime and Claude Code. The login credential (home/) and the user's files (workspace/) stay.
+     * runtime and Claude Code's binaries. The login and settings (home/) and the user's files
+     * (workspace/) stay.
      */
     fun reset() {
         bootstrapStamp.delete()
-        claudeVersionFile.delete()
-        File(bin, "claude").delete()
+        claudeLink.delete()
+        deleteTree(claudeVersions)
         deleteTree(androidLibexec)
         deleteTree(rootfs)
     }
 
     /**
-     * Installs Claude Code [CLAUDE_VERSION]: the official linux-arm64-musl build, straight from the
-     * npm registry — what `npm install` would fetch on a laptop — checked against the sha512 npm
-     * publishes for that release before it is ever executed.
+     * Installs the latest Claude Code. The official linux-arm64-musl build of npm's current release
+     * is downloaded — what `npm install` would fetch on a laptop — and checked against the sha512 npm
+     * publishes for it, then its own `claude install` sets up the native install in $HOME. From
+     * there Claude Code keeps itself up to date.
      */
-    fun downloadClaude(log: (String) -> Unit) {
-        log("downloading Claude Code $CLAUDE_VERSION (about 240 MB)…")
-        val partial = File(bin, "claude.part")
-        partial.delete()
+    fun installClaude(log: (String) -> Unit) {
+        val meta = org.json.JSONObject(fetch(NPM_LATEST).readBytes().decodeToString())
+        val version = meta.getString("version")
+        val dist = meta.getJSONObject("dist")
+        val expected = dist.getString("integrity").removePrefix("sha512-")
+        log("downloading Claude Code $version (about 240 MB)…")
+        val installer = File(tmp, "claude-installer")
+        installer.delete()
         try {
-            val conn = (URL(CLAUDE_TARBALL).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 30_000
-                readTimeout = 60_000
-            }
             val sha512 = MessageDigest.getInstance("SHA-512")
-            DigestInputStream(BufferedInputStream(conn.inputStream, 1 shl 16), sha512).use { hashed ->
+            DigestInputStream(BufferedInputStream(fetch(dist.getString("tarball")), 1 shl 16), sha512).use { hashed ->
                 val gz = GZIPInputStream(hashed, 1 shl 16)
                 extractTar(gz, onlyEntry = "package/claude") { entry ->
-                    partial.outputStream().use { copyWithProgress(entry, it, log) }
+                    installer.outputStream().use { copyWithProgress(entry, it, log) }
                 }
                 // Read to the very end, so every byte is hashed and gzip checks its CRC trailer.
                 gz.drain()
                 hashed.drain()
             }
             val got = Base64.encodeToString(sha512.digest(), Base64.NO_WRAP)
-            check(got == CLAUDE_SHA512) { "download failed verification (sha512 mismatch)" }
-            check(partial.length() > 0) { "archive did not contain package/claude" }
-            partial.setExecutable(true, false)
-            check(partial.renameTo(File(bin, "claude"))) { "could not install claude" }
-            claudeVersionFile.writeText(CLAUDE_VERSION)
+            check(got == expected) { "download failed verification (sha512 mismatch)" }
+            check(installer.length() > 0) { "archive did not contain package/claude" }
+            installer.setExecutable(true, false)
+            log("installing…")
+            run("/tmp/claude-installer install latest", log = log)
         } finally {
-            partial.delete()
+            installer.delete()
         }
-        log(capture("/usr/local/bin/claude --version").ifBlank { "installed" })
+        File(bin, "claude").delete()   // the copy earlier versions of this app kept, now unused
+        check(hasClaude) { "claude install did not complete" }
     }
+
+    private fun fetch(url: String): InputStream =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000
+            readTimeout = 60_000
+        }.inputStream
 
     private fun copyWithProgress(input: InputStream, out: java.io.OutputStream, log: (String) -> Unit) {
         val buf = ByteArray(1 shl 16)
@@ -494,11 +507,9 @@ class Sandbox(private val ctx: Context) {
         // Real apk under proot -0, its progress ("(12/45) Installing …") logged as it happens. Its
         // trailing "database inconsistent" error is cosmetic — the files are already down (it
         // fails to lock with SysV IPC, which Android lacks).
-        val p = spawn("rm -f /lib/apk/db/lock; /sbin/apk add --no-cache $packages 2>&1", asRoot = true)
-        p.inputStream.bufferedReader().forEachLine {
-            if (it.isNotBlank() && "System state may be inconsistent" !in it) log("  ${it.trim()}")
+        run("rm -f /lib/apk/db/lock; /sbin/apk add --no-cache $packages", asRoot = true, log = log) {
+            "System state may be inconsistent" !in it
         }
-        p.waitFor()
         check(hasBaseTools) { "bash, python3 or node is still missing" }
     }
 
@@ -526,10 +537,11 @@ class Sandbox(private val ctx: Context) {
         })
     }
 
-    /** Runs [inner] in the sandbox and returns its combined output. */
-    private fun capture(inner: String, asRoot: Boolean = false): String {
+    /** Runs [inner] in the sandbox, logging each line of its combined output that [keep] accepts. */
+    private fun run(inner: String, asRoot: Boolean = false, log: (String) -> Unit, keep: (String) -> Boolean = { true }) {
         val p = spawn("$inner 2>&1", asRoot)
-        return p.inputStream.bufferedReader().readText().trim().also { p.waitFor() }
+        p.inputStream.bufferedReader().forEachLine { if (it.isNotBlank() && keep(it)) log("  ${it.trim()}") }
+        p.waitFor()
     }
 
     /**
@@ -626,16 +638,7 @@ class Sandbox(private val ctx: Context) {
     }
 
     companion object {
-        /**
-         * The Claude Code release this app installs, and npm's published `dist.integrity` for it.
-         * Bump both together, deliberately, after testing a new release: the app re-downloads on
-         * launch whenever the installed version differs.
-         */
-        const val CLAUDE_VERSION = "2.1.296"
-        private const val CLAUDE_SHA512 =
-            "c6lZRVkvuHIHgo4SzF2yQp+RWwPDLLLjXuM6SNtJkR8EGcOR5FhLK7cmsrjDcC/t5ACP4N4pCRfRDzjC31cYQA=="
-        private const val CLAUDE_TARBALL = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64-musl/-/" +
-            "claude-code-linux-arm64-musl-$CLAUDE_VERSION.tgz"
+        private const val NPM_LATEST = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64-musl/latest"
         private const val PROGRESS_STEP = 25L shl 20
 
         /** What nested proot (sudo, apk) needs: libc and friends, plus liblog for libandroid-shmem. */

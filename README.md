@@ -34,15 +34,16 @@ It installs as `app.cinderlite`, so it can sit alongside the original.
 
 Cinder Lite is a **front-end**. It does not contain, copy, or reimplement Claude Code. The `claude`
 binary is Anthropic's, published on the public npm registry, and **the app downloads it at runtime
-from npm** — exactly as it would install on a laptop — and checks it against the sha512 npm publishes
-before running it. You then sign in with **your own** Anthropic account through the CLI's own login.
+from npm** — exactly as it would install on a laptop — checks it against the sha512 npm publishes,
+and lets Claude Code's own `claude install` set it up. From then on Claude Code updates itself, as it
+does on a laptop. You then sign in with **your own** Anthropic account through the CLI's own login.
 Cinder Lite provides a Linux environment for the binary to run in, and a terminal to show it.
 
 | Layer | What it is |
 |---|---|
 | UI | Termux `terminal-view` showing the `claude` TUI, plus a row of keys phones lack (esc, tab, ⇧tab, ctrl, arrows) and a ⋮ menu |
 | Sandbox | proot + an Alpine Linux 3.24 (musl, aarch64) rootfs, in app-private storage; phone storage at `/sdcard` |
-| Engine | Anthropic's `claude` binary, a pinned release — **downloaded at runtime and verified, never bundled** |
+| Engine | Anthropic's `claude` binary, the latest release — **downloaded at runtime and verified, never bundled**; it updates itself |
 | Auth | The CLI's own `/login`. Its browser hand-off goes through an `xdg-open` shim that opens the phone's browser |
 
 <br>
@@ -56,7 +57,7 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 | Model, permissions, history | App's own pickers and session store | Claude Code's `/model`, `/permissions`, `/resume` |
 | Shell | One-shot commands on Android's host shell | A real bash in the sandbox, kept alongside Claude |
 | Phone files | Upload/export buttons | Shared storage mounted at `/sdcard` |
-| Claude Code install | Latest from npm, unverified | Pinned release, sha512-verified, self-updater off |
+| Claude Code install | Latest from npm, unverified | Latest from npm, sha512-verified, then Claude Code's native install with self-updates |
 | Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,150 lines in 3 Kotlin files |
 | Release APK | ~33 MB (debug) | ~4.5 MB, signed, R8-shrunk |
 
@@ -86,8 +87,9 @@ the 32-bit proot loader.
 
 - **The real Claude Code TUI** — model picker, permission prompts, `/resume`, slash commands and
   everything else come from Claude Code itself
-- **Verified downloader** — installs a pinned `linux-arm64-musl` release from npm and checks its
-  sha512; an app update that bumps the pin re-downloads automatically
+- **Always the latest Claude Code** — first run installs npm's current `linux-arm64-musl` release
+  (checked against its sha512) through Claude Code's own `claude install`; after that Claude Code
+  keeps itself up to date
 - **Phone files** — grant storage access once and the phone's shared storage is `/sdcard` inside
   the sandbox; ask Claude to save things to `/sdcard/Download`
 - **Survives being backgrounded** — a foreground service and wake lock hold the process, since the
@@ -211,9 +213,9 @@ same key, or Android refuses to install it over the previous version — back th
 hand out debug builds: they're debuggable, so anyone with adb access to the phone could read the
 Claude Code login out of the app's storage.
 
-**Bumping Claude Code.** `CLAUDE_VERSION` and `CLAUDE_SHA512` in `Sandbox.kt` pin the release. Take
-both from `https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64-musl/<version>`
-(`version` and `dist.integrity`), test, and ship; installed apps re-download on next launch.
+**Claude Code updates.** Nothing to do in the app: Claude Code lives in its standard native install
+in the sandbox's home (`/root/.local/bin/claude`) and updates itself. `claude update` in the shell
+checks right away; ⋮ → Reinstall sandbox installs the latest release from scratch.
 
 **First run:** allow storage access, then wait while the app unpacks the sandbox, downloads Claude
 Code (~240 MB from npm, wifi recommended) and installs bash, git, Python, Node.js and friends. Claude Code then
