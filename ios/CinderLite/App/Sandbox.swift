@@ -114,7 +114,10 @@ final class Sandbox {
 
     /// The environment every session starts with (Android's prelude, minus its Android parts).
     var environment: [String] {
-        [
+        // The phone's time zone (tzdata has the rules), so clocks in here read local time.
+        let zone = TimeZone.current.identifier
+        let tz = zone.range(of: "^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$", options: .regularExpression) != nil ? ["TZ=\(zone)"] : []
+        return tz + [
             "PATH=/usr/local/bin:/root/.npm-global/bin:/root/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME=/root", "TMPDIR=/tmp", "SHELL=\(shell)", "TERM=xterm-256color", "LANG=C.UTF-8",
             // npm -g and pip install into the home directory, which is on PATH.

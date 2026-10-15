@@ -161,7 +161,7 @@ class Sandbox(private val ctx: Context) {
      */
     val hasBaseTools get() = runCatching {
         File(rootfs, "lib/apk/db/installed").useLines { lines -> lines.filter { it.startsWith("P:") }.toSet() }
-    }.getOrDefault(emptySet()).containsAll(listOf("P:bash", "P:python3", "P:nodejs"))
+    }.getOrDefault(emptySet()).containsAll(listOf("P:bash", "P:python3", "P:nodejs", "P:tzdata"))
     /** The base tools' telltale files, recorded or not. */
     private val hasBaseFiles get() = hasBash && listOf("usr/bin/python3", "usr/bin/node").all { File(rootfs, it).exists() }
 
@@ -353,6 +353,8 @@ class Sandbox(private val ctx: Context) {
             append("export PYTHONUSERBASE=/root/.local; ")
             // Nothing in here can open a browser; xdg-open hands the URL to the app (OAuth login).
             append("export BROWSER=xdg-open; ")
+            // The phone's time zone (tzdata has the rules), so clocks in here read local time.
+            timeZone()?.let { append("export TZ=$it; ") }
         }
         // The phone's shared storage, once the user has granted the (legacy, targetSdk 28)
         // storage permission — the same access Termux's termux-setup-storage gives.
@@ -380,6 +382,9 @@ class Sandbox(private val ctx: Context) {
             "/bin/sh", "-c", prelude + inner
         ).toTypedArray()
     }
+
+    /** The phone's time zone as an IANA name (America/Los_Angeles), if it is one. */
+    private fun timeZone() = java.util.TimeZone.getDefault().id.takeIf { it.matches(Regex("[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*")) }
 
     /** Starts [inner] in the sandbox as a plain (non-terminal) process, for setup steps. */
     fun spawn(inner: String, asRoot: Boolean = false): Process {
@@ -517,7 +522,7 @@ class Sandbox(private val ctx: Context) {
      */
     fun installBaseTools(log: (String) -> Unit) {
         val packages = "bash coreutils findutils grep sed git ripgrep less curl python3 py3-pip nodejs npm " +
-            "openssh-client make patch zip jq"
+            "openssh-client make patch zip jq tzdata"
         log("apk add $packages …")
         // Real apk under proot -0, its progress ("(12/45) Installing …") logged as it happens.
         run("/sbin/apk add --no-cache $packages", asRoot = true, log = log)

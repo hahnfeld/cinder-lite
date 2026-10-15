@@ -44,8 +44,8 @@ EOF
   : > $dl/request
 fi
 
-base="bash coreutils findutils grep sed git ripgrep less curl python3 py3-pip nodejs npm openssh-client make patch zip jq"
-if ! apk info -e bash python3 nodejs >/dev/null 2>&1; then
+base="bash coreutils findutils grep sed git ripgrep less curl python3 py3-pip nodejs npm openssh-client make patch zip jq tzdata"
+if ! apk info -e bash python3 nodejs tzdata >/dev/null 2>&1; then
   echo "Installing the base tools (this runs in an emulator: a few minutes)…"
   apk add --no-cache $base
 fi
