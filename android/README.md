@@ -36,9 +36,10 @@ It installs as `app.cinderlite`, so it can sit alongside the original.
 
 Cinder Lite is a **front-end**. It does not contain, copy, or reimplement Claude Code. The `claude`
 binary is Anthropic's, published on the public npm registry, and **the app downloads it at runtime
-from npm** — exactly as it would install on a laptop — checks it against the sha512 npm publishes,
-and lets Claude Code's own `claude install` set it up. From then on Claude Code updates itself, as it
-does on a laptop. You then sign in with **your own** Anthropic account through the CLI's own login.
+from npm**, only after you agree: it first says that Claude Code is distributed separately under
+Anthropic's own license, and waits for a tap. The download is what would install on a laptop; the app
+checks it against the sha512 npm publishes, and lets Claude Code's own `claude install` set it up.
+From then on Claude Code updates itself, as it does on a laptop. You then sign in with **your own** Anthropic account through the CLI's own login.
 Cinder Lite provides a Linux environment for the binary to run in, and a terminal to show it.
 
 | Layer | What it is |
@@ -453,9 +454,10 @@ Claude Code login out of the app's storage.
 in the sandbox's home (`/root/.local/bin/claude`) and updates itself. `claude update` in the shell
 checks right away; ⋮ → Reinstall sandbox installs the latest release from scratch.
 
-**First run:** allow storage access, then wait while the app unpacks the sandbox, downloads Claude
-Code (~240 MB from npm, wifi recommended) and installs bash, git, Python, Node.js and friends. Claude Code then
-starts; type `/login`.
+**First run:** allow storage access. The app unpacks the sandbox, then says that Claude Code is
+Anthropic's software under its own license and asks before getting it: tap **Download Claude Code**.
+It then downloads Claude Code (~240 MB from npm, wifi recommended) and installs bash, git, Python,
+Node.js and friends. Claude Code then starts; type `/login`.
 
 **Installing on Android 16–17.** Android 17 still installs apps targeting API 24+, so targetSdk 28 is
 fine, and the app has been tested on Android 17 (API 37). Two platform policies affect sideloading it,

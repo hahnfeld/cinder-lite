@@ -11,7 +11,7 @@ unaffiliated with Anthropic; you sign in with your own Claude account. Sideload 
 | | [Android](android/) | [iOS](ios/) |
 |---|---|---|
 | Sandbox | Alpine under proot, native speed | Alpine in iSH-AOK's emulator (no JIT on iOS), slower |
-| Claude Code | Downloaded from npm on first launch, sha512-verified, self-updating | The same |
+| Claude Code | Downloaded from npm on first launch once you agree to Anthropic's license, sha512-verified, self-updating | The same |
 | Phone control | A separate virtual screen in picture-in-picture (Shizuku + accessibility) | Your real screen, through the iCTRL runner |
 | Shell access to the phone | `rish` / `adb shell` through Shizuku | None (iOS has no equivalent) |
 | License | MIT | GPL-3.0 (iSH-AOK's emulator is GPL) |

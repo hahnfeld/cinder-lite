@@ -37,6 +37,7 @@ import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import java.io.File
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -55,6 +56,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private lateinit var terminal: TerminalView
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
+    private lateinit var setupPane: LinearLayout
+    private lateinit var agree: Button
     private lateinit var ctrlKey: Button
     private var ctrl = false
     private var fontSize = 0
@@ -77,11 +80,27 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             setTextColor(Color.LTGRAY)
             setPadding(sp(8f), sp(8f), sp(8f), sp(8f))
         }
-        logScroll = ScrollView(this).apply { addView(logView); visibility = View.GONE }
+        logScroll = ScrollView(this).apply { addView(logView) }
+        // Setup's log, and under it the button that agrees to Claude Code's download (see [askToDownload]).
+        agree = Button(this).apply {
+            text = "Download Claude Code"
+            isAllCaps = false
+            setOnClickListener {
+                consent?.countDown()
+                consent = null
+                visibility = View.GONE
+            }
+        }
+        setupPane = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(logScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+            addView(agree, LinearLayout.LayoutParams(-1, -2))
+        }
 
         val screen = FrameLayout(this).apply {
             addView(terminal)
-            addView(logScroll)
+            addView(setupPane)
         }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -146,7 +165,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             try {
                 if (reset) { log("resetting the sandbox…"); sandbox.reset() }
                 sandbox.bootstrap(::log)
-                if (!sandbox.hasClaude) sandbox.installClaude(::log)
+                if (!sandbox.hasClaude) { askToDownload(); sandbox.installClaude(::log) }
                 if (!sandbox.hasBaseTools) sandbox.installBaseTools(::log)
                 launch(sandbox, Tab.Claude)
             } catch (e: Exception) {
@@ -175,7 +194,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     }
 
     private fun attach(s: TerminalSession) {
-        logScroll.visibility = View.GONE
+        setupPane.visibility = View.GONE
         terminal.visibility = View.VISIBLE
         sessions.values.forEach { it.updateTerminalSessionClient(this) }
         terminal.attachSession(s)
@@ -195,8 +214,9 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     private fun showLog() {
         logView.text = setupLog
+        agree.visibility = if (consent != null) View.VISIBLE else View.GONE
         terminal.visibility = View.INVISIBLE
-        logScroll.visibility = View.VISIBLE
+        setupPane.visibility = View.VISIBLE
     }
 
     // ---------------- extra keys ----------------
@@ -470,6 +490,18 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         // $SHELL is bash once installed, busybox sh before that — so a shell works for recovery too.
         private const val SHELL = "exec \$SHELL"
 
+        /** Shown before Claude Code is downloaded; the iOS app's cinder-setup says the same. */
+        private val CLAUDE_NOTICE = listOf(
+            "",
+            "Cinder Lite runs Claude Code, but doesn't include it. Claude Code is Anthropic's software, " +
+                "distributed separately under its own license (© Anthropic PBC, all rights reserved). " +
+                "Its use is subject to Anthropic's legal agreements: " +
+                "https://code.claude.com/docs/en/legal-and-compliance",
+            "",
+            "Tap Download Claude Code to get the latest version from npm (about 240 MB) and install it " +
+                "here. By downloading it, you accept Anthropic's terms for it.",
+        )
+
         /** The two terminals the app keeps, each with its own session: switching keeps both alive. */
         private enum class Tab(val title: String, val noun: String, val command: String) {
             Claude("Claude", "Claude Code", CLAUDE),
@@ -479,6 +511,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         private val main = Handler(Looper.getMainLooper())
         private val busy = AtomicBoolean(false)
         private val setupLog = StringBuilder()
+        /** Set while setup waits for the user to agree to Claude Code's download; touched on main only. */
+        private var consent: CountDownLatch? = null
 
         // Outlive the activity; touched on the main thread only.
         private val sessions = mutableMapOf<Tab, TerminalSession>()
@@ -504,6 +538,22 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                     logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
                 }
             }
+        }
+
+        /**
+         * Claude Code isn't Cinder Lite's to hand out: it's Anthropic's, under its own license. So
+         * its download is the user's call, made by a tap, never automatic. Blocks setup's thread
+         * until then; leaving the app instead just leaves it waiting (it asks again on return).
+         */
+        private fun askToDownload() {
+            CLAUDE_NOTICE.forEach(::log)
+            val latch = CountDownLatch(1)
+            main.post {
+                consent = latch
+                ui?.showLog()
+            }
+            latch.await()
+            log("")
         }
 
         /** Starts [tab] in a fresh session (replacing its old one, if any) and shows it. Call off main. */
