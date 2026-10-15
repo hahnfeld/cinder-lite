@@ -60,8 +60,10 @@ final class Notifier {
         switch event["hook_event_name"] as? String {
         case "UserPromptSubmit":
             turnStarted = Date()
+            KeepAlive.shared.claudeTurn(running: true)
             return
         case "Stop":
+            KeepAlive.shared.claudeTurn(running: false)
             let took = Date().timeIntervalSince(turnStarted)
             turnStarted = .distantFuture
             if took < 60 { return }
@@ -106,10 +108,11 @@ final class ClaudeInstaller: NSObject, URLSessionDownloadDelegate {
     func start() {
         guard watcher == nil else { return }
         watcher = DirectoryWatcher(dl) { [weak self] in
-            guard let self, !self.running,
-                  FileManager.default.fileExists(atPath: self.dl.appendingPathComponent("request").path) else { return }
-            try? FileManager.default.removeItem(at: self.dl.appendingPathComponent("request"))
-            self.install()
+            guard let self else { return }
+            let request = self.dl.appendingPathComponent("request")
+            guard FileManager.default.fileExists(atPath: request.path) else { return }
+            try? FileManager.default.removeItem(at: request)   // even while downloading: one download answers it
+            if !self.running { self.install() }
         }
     }
 

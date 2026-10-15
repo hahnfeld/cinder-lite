@@ -3,9 +3,11 @@ import Speech
 import UIKit
 
 /// The 🎤 key: voice typing through iOS's speech recognizer, in a small sheet. What it hears is
-/// shown as it goes; Insert pastes it into the terminal that's showing.
+/// shown as it goes; Insert pastes it into the terminal that's showing. `onDone` gets the text, or
+/// nil when the sheet closes without it (Cancel, or swiped away).
 final class VoiceController: UIViewController {
-    private let onInsert: (String) -> Void
+    private let onDone: (String?) -> Void
+    private var inserted = false
     private let text = UILabel()
     private let recognizer = SFSpeechRecognizer()
     private let audio = AVAudioEngine()
@@ -13,8 +15,8 @@ final class VoiceController: UIViewController {
     private var task: SFSpeechRecognitionTask?
     private var heard = ""
 
-    init(onInsert: @escaping (String) -> Void) {
-        self.onInsert = onInsert
+    init(onDone: @escaping (String?) -> Void) {
+        self.onDone = onDone
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -48,6 +50,7 @@ final class VoiceController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         stop()
+        onDone(inserted && !heard.isEmpty ? heard : nil)
     }
 
     private func authorize() {
@@ -114,8 +117,7 @@ final class VoiceController: UIViewController {
     }
 
     private func close(insert: Bool) {
-        stop()
-        let heard = heard
-        dismiss(animated: true) { if insert && !heard.isEmpty { self.onInsert(heard) } }
+        inserted = insert
+        dismiss(animated: true)
     }
 }

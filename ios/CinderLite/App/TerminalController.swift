@@ -144,6 +144,7 @@ final class TerminalController: UIViewController {
         }
         show(tab)
         KeepAlive.shared.sessionsRunning(true)
+        KeepAlive.shared.touch()
     }
 
     /// Switches the screen to `tab`, starting its session the first time. The other keeps running.
@@ -298,7 +299,7 @@ final class TerminalController: UIViewController {
                                       message: "Everything installed in the sandbox is removed, and the latest Claude Code is " +
                                       "installed again. Your login, settings and /workspace are kept. Cinder Lite closes; " +
                                       "open it again to set up.", preferredStyle: .alert)
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.showKeyboard() })
         sheet.addAction(UIAlertAction(title: "Reinstall", style: .destructive) { _ in
             Sandbox.shared.requestReset()
             exit(0)   // the emulator holds the old root until the process ends
@@ -308,7 +309,10 @@ final class TerminalController: UIViewController {
 
     func listen() {
         autocorrect?.forget()
-        let voice = VoiceController { [weak self] text in self?.paste(text); self?.showKeyboard() }
+        let voice = VoiceController { [weak self] text in
+            if let text { self?.paste(text) }
+            self?.showKeyboard()
+        }
         if let sheet = voice.sheetPresentationController {
             sheet.detents = [.medium()]
             sheet.prefersGrabberVisible = true
@@ -349,6 +353,7 @@ final class KeysBar: UIInputView {
         let menu = key("⋮") {}
         menu.menu = UIMenu(children: [UIDeferredMenuElement.uncached { done in done(c?.menu().children ?? []) }])
         menu.showsMenuAsPrimaryAction = true
+        menu.preferredMenuElementOrder = .fixed   // as listed, the other tab first, as on Android
         ctrl.setTitleColor(Colors.accent, for: .selected)
         let row = UIStackView(arrangedSubviews: [
             key("esc") { c?.send("\u{1b}") },

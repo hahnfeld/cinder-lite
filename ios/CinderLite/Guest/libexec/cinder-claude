@@ -8,5 +8,7 @@ until sh /usr/local/libexec/cinder-setup; do
   read -r _
 done
 cd /workspace
+# This session started before setup installed bash; Claude Code's Bash tool should get it anyway.
+[ -x /bin/bash ] && export SHELL=/bin/bash
 exec /root/.local/bin/claude --settings /usr/local/libexec/cinder-settings.json \
   --append-system-prompt "$(cat /usr/local/libexec/cinder-brief.md)"

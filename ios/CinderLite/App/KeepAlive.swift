@@ -5,11 +5,18 @@ import UIKit
 /// it the emulator and Claude mid-task. An app receiving location updates keeps running, so while
 /// this is on and a session runs, Cinder Lite asks for them: the coarsest accuracy, nothing kept or
 /// sent anywhere, and iOS shows its location indicator meanwhile. Off by default.
+///
+/// Never indefinitely, as on Android: a forgotten session must not drain the battery. It lapses an
+/// hour after the last sign of use (a turn ending, a session starting, the app on screen), or four
+/// while a Claude turn runs (an interrupted turn may never say it ended); the next sign renews it.
 final class KeepAlive: NSObject, CLLocationManagerDelegate {
     static let shared = KeepAlive()
     private static let key = "keepAlive"
     private let manager = CLLocationManager()
     private var wanted = false   // a session is running
+    private var turnRunning = false
+    private var lapsed = false
+    private var idleTimer: Timer?
 
     var enabled: Bool {
         get { UserDefaults.standard.bool(forKey: Self.key) }
@@ -38,13 +45,30 @@ final class KeepAlive: NSObject, CLLocationManagerDelegate {
         update()
     }
 
+    /// A sign of use: restarts the hour.
+    func touch() {
+        lapsed = false
+        idleTimer?.invalidate()
+        idleTimer = Timer.scheduledTimer(withTimeInterval: (turnRunning ? 4 : 1) * 3600, repeats: false) { [weak self] _ in
+            self?.lapsed = true
+            self?.update()
+        }
+        update()
+    }
+
+    /// Claude Code's hooks: a prompt submitted starts a turn, Stop ends it.
+    func claudeTurn(running: Bool) {
+        turnRunning = running
+        touch()
+    }
+
     private func update() {
         let authorized = [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus)
         // For the sandbox: `phone start` refuses without it (/root/.cinder/keep-alive).
         let flag = Sandbox.shared.requests.appendingPathComponent("keep-alive")
         if enabled && authorized { FileManager.default.createFile(atPath: flag.path, contents: Data("on\n".utf8)) }
         else { try? FileManager.default.removeItem(at: flag) }
-        if enabled && wanted && authorized {
+        if enabled && wanted && authorized && !lapsed {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
             manager.startUpdatingLocation()

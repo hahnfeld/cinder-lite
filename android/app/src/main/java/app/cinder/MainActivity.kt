@@ -89,6 +89,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 consent?.countDown()
                 consent = null
                 visibility = View.GONE
+                SessionService.start(applicationContext)   // Stop may have ended it while this waited
             }
         }
         setupPane = LinearLayout(this).apply {

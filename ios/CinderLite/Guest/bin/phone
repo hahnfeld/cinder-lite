@@ -8,8 +8,7 @@ commands use points, the same numbers as in `phone ui` bounds and in shots.
 
 iCTRL's runner listens on 127.0.0.1:8200. Its protocol v1 (Scripts/ictrl_rpc.py and
 iCTRLKit/SecureEnvelope.swift there, Apache-2.0) seals each request with a key from a one-time
-pairing: HMAC-SHA256 for the keystream and the tag. Pairing over loopback needs no prompt; the key
-is kept in /root/.cinder/ictrl.json.
+pairing: HMAC-SHA256 for the keystream and the tag. The key is kept in /root/.cinder/ictrl.json.
 
 Pairing needs the user: iCTRL asks on the iPhone whether to allow "Cinder Lite", and waits about a
 minute for a tap on Allow. That happens once (and again only if iCTRL forgets the key: it expires
@@ -297,6 +296,10 @@ def screen():
         out.append(e.line(len(found)))
     if more:
         out.append(f"… more than {MAX_ELEMENTS} elements; scroll to see the rest")
+    if (result.get("channel") or {}).get("recommended") == "ocr" and found:
+        out.append("(much of this screen isn't in this list, e.g. a web page or a game: phone shot shows it all)")
+    if result.get("warning"):   # from iCTRL itself, e.g. it couldn't tell which app is in front
+        out.append(f"(iCTRL: {clean(result['warning'], 400)})")
     if not found:
         out.append("(no elements to list: the screen may be a web page or drawn by the app; use phone shot "
                    "and phone tap)")

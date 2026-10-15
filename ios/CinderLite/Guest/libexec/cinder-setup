@@ -17,7 +17,9 @@ printf '%s\n' "$m/v$release/main" "$m/v$release/community" "@edge $m/edge/main" 
 
 # Claude Code isn't Cinder Lite's to hand out: it's Anthropic's, under its own license. So its
 # download is the user's call, made by pressing Enter, never automatic. The Android app says the same.
-if [ ! -L /root/.local/bin/claude ]; then
+# Asked once per download: a retry after a failure elsewhere (apk) doesn't ask again while the
+# agreed download is under way or done.
+if [ ! -L /root/.local/bin/claude ] && [ ! -f $dl/claude-installer ] && { [ ! -f $dl/progress ] || [ -f $dl/error ]; }; then
   # The terminal gets its real size once it's on screen, which can be just after this starts
   # (until then it's the default 80 columns): wait for that resize, two seconds at most.
   if [ "$(stty size 2>/dev/null | cut -d' ' -f2)" = 80 ]; then

@@ -31,6 +31,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Back in the app: the keyboard comes back up, and Claude's alert has done its job.
     func sceneDidBecomeActive(_ scene: UIScene) {
         Notifier.shared.clear()
+        KeepAlive.shared.touch()
         controller.showKeyboard()
     }
 }

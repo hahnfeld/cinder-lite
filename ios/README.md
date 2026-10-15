@@ -85,7 +85,9 @@ iOS suspends an app soon after you leave it, and with it the emulator and Claude
 Keep running in background keeps Cinder Lite running while a session is: it receives location
 updates, which iOS lets continue in the background. It asks for the coarsest location only; Cinder
 Lite doesn't keep it or send it anywhere. iOS shows its location indicator meanwhile, and it uses more
-battery, so it's off by default: turn it on for long tasks, or for `phone`, and off afterwards.
+battery, so it's off by default: turn it on for long tasks, or for `phone`, and off afterwards. Like
+Android's, it never lasts indefinitely: it lapses an hour after you last used the app or Claude last
+finished a turn (four hours into a turn that never says it ended), and opening the app renews it.
 
 ## Phone control (optional): Claude uses apps on your iPhone
 

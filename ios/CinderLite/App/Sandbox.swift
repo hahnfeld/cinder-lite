@@ -39,12 +39,6 @@ final class Sandbox {
     /// The guest's files are real files under root/data (fakefs keeps only their metadata apart).
     private func guestFile(_ path: String) -> URL { root.appendingPathComponent("data" + path) }
 
-    /// Claude Code's native install, as `claude install` lays it out in /root.
-    var hasClaude: Bool {
-        let versions = guestFile("/root/.local/share/claude/versions")
-        return !((try? FileManager.default.contentsOfDirectory(atPath: versions.path)) ?? []).isEmpty
-    }
-
     var shell: String { FileManager.default.fileExists(atPath: guestFile("/bin/bash").path) ? "/bin/bash" : "/bin/sh" }
 
     /// Unpacks the bundled Alpine root, once. The stamp is written last, so an unpack that was
