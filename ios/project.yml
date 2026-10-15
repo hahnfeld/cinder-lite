@@ -1,0 +1,79 @@
+name: CinderLite
+options:
+  bundleIdPrefix: app.cinderlite
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    ISH: $(PROJECT_DIR)/ish-AOK
+    ENGINE: $(PROJECT_DIR)/build/engine-$(PLATFORM_NAME)
+projectReferences:
+  libarchive:
+    path: ish-AOK/deps/libarchive.xcodeproj
+targets:
+  CinderLite:
+    type: application
+    platform: iOS
+    sources:
+      - path: CinderLite/App
+      - path: CinderLite/Engine
+      - path: ish-AOK/tools/fakefs.c
+      - path: CinderLite/Resources
+        buildPhase: resources
+      # The guest's helpers (bin/, libexec/), copied into the sandbox at every launch: a folder
+      # reference, so the bundle keeps the two directories.
+      - path: CinderLite/Guest
+        type: folder
+        buildPhase: resources
+      - path: ish-AOK/deps/libapps/hterm/dist/js/hterm_all.js
+        buildPhase: resources
+    preBuildScripts:
+      - name: Build the emulator (iSH-AOK)
+        script: |
+          "$PROJECT_DIR/scripts/build-engine.sh" "$PLATFORM_NAME" "$ENGINE"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.cinderlite.ios
+        PRODUCT_NAME: CinderLite
+        INFOPLIST_FILE: CinderLite/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CinderLite/CinderLite.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: CinderLite/App/CinderLite-Bridging-Header.h
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        CLANG_ENABLE_OBJC_ARC: YES
+        GCC_C_LANGUAGE_STANDARD: gnu11
+        HEADER_SEARCH_PATHS:
+          - $(ISH)
+          - $(ISH)/deps/libarchive/libarchive
+          - $(PROJECT_DIR)/CinderLite/Engine
+        LIBRARY_SEARCH_PATHS:
+          - $(ENGINE)
+        OTHER_LDFLAGS:
+          - -lish
+          - -lish_emu
+          - -lfakefs
+          - -lsqlite3
+          - -lz
+          - -lbz2
+          - -liconv
+          - -lcompression
+          - -lresolv
+          - -lc++
+        # The engine's C is compiled by meson; these warnings are about its headers.
+        GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+        CLANG_WARN_STRICT_PROTOTYPES: NO
+    dependencies:
+      - target: libarchive/libarchive
+      - framework: ish-AOK/deps/liblzma-static/liblzma.xcframework
+        embed: false
+      - sdk: WebKit.framework
+      - sdk: CoreLocation.framework
+      - sdk: Speech.framework
+      - sdk: UserNotifications.framework

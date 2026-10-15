@@ -1,0 +1,5 @@
+build/
+*.xcodeproj/xcuserdata/
+.claude/
+CinderLite.xcodeproj/
+__pycache__/

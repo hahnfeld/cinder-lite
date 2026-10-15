@@ -1,0 +1,7 @@
+#!/bin/sh
+# xdg-open <url>: opens a web page on the iPhone (Claude Code's /login). https only: anything in
+# the sandbox can call this, and other schemes reach other apps' deep links.
+case "$1" in
+  https://*) printf '%s' "$1" > /dev/url ;;
+  *) echo "xdg-open: only https links open here" >&2; exit 1 ;;
+esac

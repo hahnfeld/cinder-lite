@@ -1,0 +1,3 @@
+[submodule "ios/ish-AOK"]
+	path = ios/ish-AOK
+	url = https://github.com/emkey1/ish-AOK.git

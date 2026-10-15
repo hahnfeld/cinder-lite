@@ -1,0 +1,12 @@
+#!/bin/sh
+# The Claude tab: set up on first run, then Claude Code with Cinder Lite's brief and hooks.
+# A failed setup leaves its error on screen and tries again on Enter.
+until sh /usr/local/libexec/cinder-setup; do
+  echo
+  echo "Setup didn't finish. Check the connection and free space, then press Enter to try again"
+  echo "(⋮ → Reinstall sandbox starts over)."
+  read -r _
+done
+cd /workspace
+exec /root/.local/bin/claude --settings /usr/local/libexec/cinder-settings.json \
+  --append-system-prompt "$(cat /usr/local/libexec/cinder-brief.md)"

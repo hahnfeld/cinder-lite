@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\n' \"$l\"; done; } > /root/.cinder/notify-request.tmp && mv /root/.cinder/notify-request.tmp /root/.cinder/notify-request"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\n' \"$l\"; done; } > /root/.cinder/notify-request.tmp && mv /root/.cinder/notify-request.tmp /root/.cinder/notify-request"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ while IFS= read -r l || [ -n \"$l\" ]; do printf '%s\\n' \"$l\"; done; } > /root/.cinder/notify-request.tmp && mv /root/.cinder/notify-request.tmp /root/.cinder/notify-request"
+          }
+        ]
+      }
+    ]
+  }
+}
