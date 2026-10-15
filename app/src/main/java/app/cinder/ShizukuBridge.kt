@@ -13,14 +13,19 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Process
-import android.provider.Settings
+import android.os.RemoteException
+import android.os.SystemClock
 import android.system.Os
 import android.util.Log
+import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuProvider
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.File
+import java.io.FileDescriptor
 import java.io.FileOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -45,11 +50,16 @@ object ShizukuBridge {
     private const val TAG = "cinder-rish"
     private const val PREF = "shizuku"
     private const val REQUEST = 7
+    private const val NO_ACCESSIBILITY = "Claude can't read the phone screen: \"Cinder Lite phone screen\" is off in " +
+        "Android's Accessibility settings. The user has been told how to turn it on (phone setup opens the page). " +
+        "Until then use phone shot and phone tap."
 
-    private var server: LocalServerSocket? = null
+    @Volatile private var server: LocalServerSocket? = null
     @Volatile private var service: IShellService? = null
     private var connection: ServiceConnection? = null
+    private val binding = Any()   // one connect() at a time (not this object's lock: start/stop run on main)
     private val main = Handler(Looper.getMainLooper())
+    @Volatile private var reminded = 0L
 
     fun isEnabled(ctx: Context) = ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE).getBoolean(PREF, false)
 
@@ -98,11 +108,11 @@ object ShizukuBridge {
 
     @Synchronized
     fun stop(ctx: Context) {
-        PhoneScreenActivity.current?.let { it.release(); it.finish() }
+        PhoneScreenActivity.current?.close()
         val socket = server ?: return
         server = null
         // accept() doesn't notice close(); a throwaway connection wakes it so its thread can exit.
-        runCatching { LocalSocket().connect(LocalSocketAddress(TAG)) }
+        runCatching { LocalSocket().use { it.connect(LocalSocketAddress(TAG)) } }
         runCatching { socket.close() }
         connection?.let { conn -> runCatching { Shizuku.unbindUserService(serviceArgs(ctx), conn, true) } }
         connection = null
@@ -110,45 +120,35 @@ object ShizukuBridge {
     }
 
     private fun serve(ctx: Context, client: LocalSocket) {
+        var fds: Array<FileDescriptor>? = null
         try {
-            relay(ctx, client)
+            // Abstract sockets are reachable by every app on the device; only our own sandbox (same
+            // uid) may run commands with adb-shell privileges.
+            if (client.peerCredentials.uid != Process.myUid()) return
+            val input = DataInputStream(client.inputStream)
+            val header = JSONObject(readLine(input))
+            fds = client.ancillaryFileDescriptors
+            relay(ctx, client, input, header, fds)
         } catch (e: Exception) {
             Log.w(TAG, "rish request failed", e)
-        } finally {
-            runCatching { client.close() }
-        }
-    }
-
-    private fun relay(ctx: Context, client: LocalSocket) {
-        var fds: Array<java.io.FileDescriptor>? = null
-        try {
-            relayCommand(ctx, client) { fds = it }
         } finally {
             // Our copies of the client's stdout/stderr. If they stay open, whatever reads the other
             // end of a pipe (rish … | head) never sees EOF and waits forever.
             fds?.forEach { runCatching { Os.close(it) } }
+            runCatching { client.close() }
         }
     }
 
-    private fun relayCommand(ctx: Context, client: LocalSocket, received: (Array<java.io.FileDescriptor>) -> Unit) {
+    private fun relay(ctx: Context, client: LocalSocket, input: DataInputStream, header: JSONObject, fds: Array<FileDescriptor>?) {
         val out = client.outputStream
         fun reply(line: String) { runCatching { out.write("$line\n".toByteArray()); out.flush() } }
 
-        // Abstract sockets are reachable by every app on the device; only our own sandbox (same uid)
-        // may run commands with adb-shell privileges.
-        if (client.peerCredentials.uid != Process.myUid()) return
-
-        val input = DataInputStream(client.inputStream)
-        val header = JSONObject(readLine(input))
-        val fds = client.ancillaryFileDescriptors?.also(received)
-        if (fds == null || fds.size < 2) { reply("error rish sent no output streams"); return }
+        if (fds == null || fds.size < 2) return reply("error rish sent no output streams")
         header.optJSONArray("phone")?.let { op ->
-            val out = FileOutputStream(fds[0])
-            reply(try { phone(ctx, op, out); "exit 0" } catch (e: Exception) { "error ${e.message}" })
-            return
+            return reply(try { phone(ctx, op, FileOutputStream(fds[0])); "exit 0" } catch (e: Exception) { "error ${why(e)}" })
         }
 
-        val shell = try { connect(ctx) } catch (e: Exception) { reply("error ${e.message}"); return }
+        val shell = try { connect(ctx) } catch (e: Exception) { return reply("error ${why(e)}") }
         val stdin = ParcelFileDescriptor.createPipe()
         val stdout = ParcelFileDescriptor.createPipe()
         val stderr = ParcelFileDescriptor.createPipe()
@@ -156,7 +156,7 @@ object ShizukuBridge {
             shell.start(header.optString("cmd"), header.optBoolean("interactive"), stdin[0], stdout[1], stderr[1])
         } catch (e: Exception) {
             listOf(stdin[1], stdout[0], stderr[0]).forEach { runCatching { it.close() } }
-            reply("error couldn't start the command: ${e.message}")
+            reply("error couldn't start the command: ${why(e)}")
             return
         } finally {
             listOf(stdin[0], stdout[1], stderr[1]).forEach { it.close() }   // the service has its own copies
@@ -188,65 +188,119 @@ object ShizukuBridge {
         }
 
         val code = runCatching { shell.waitFor(id) }.getOrNull()
-        // All output shown before the client sees the exit code, and before relay() closes its fds.
+        // All output shown before the client sees the exit code, and before serve() closes its fds.
         // If the service died, its pipe ends died with it, so these still finish.
         output.forEach { it.join() }
         reply(if (code == null) "error lost the Shizuku service" else "exit $code")
     }
 
     /**
-     * A phone screen operation: `phone start|stop|id|shot|setup`, or `ui|click|type|scroll` through
-     * [PhoneAccessibility]. Output goes to [out], the client's stdout.
+     * A phone screen operation: `phone start|stop|shot|setup|ui`, or an action, which then prints the
+     * screen it leads to: `click|type|scroll` through [PhoneAccessibility], `tap|swipe|key|text` as
+     * input events, `open` an app. Output goes to [out], the client's stdout. Arguments are checked
+     * before anything waits.
      */
     private fun phone(ctx: Context, op: JSONArray, out: FileOutputStream) {
         fun arg(i: Int) = op.optString(i).ifEmpty { error("missing an argument; see: phone help") }
-        fun screen() = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 }
-            ?: error("the phone screen isn't open. Run: phone start")
-        fun a11y() = PhoneAccessibility.instance ?: error("Claude can't read the phone screen until " +
-            "\"Cinder Lite phone screen\" is on in Android's Accessibility settings (run: phone setup). " +
-            "Until then use phone shot and phone tap.")
+        fun number(i: Int) = arg(i).toFloatOrNull() ?: error("'${arg(i)}' isn't a number; see: phone help")
+        fun live() = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 }
+        fun screen() = (live() ?: error("the phone screen isn't open. Run: phone start"))
+            .also { check(!it.stopped) { "the phone is asleep; the phone screen resumes when its screen is back on" } }
+        fun a11y() = PhoneAccessibility.instance ?: run { remind(ctx); error(NO_ACCESSIBILITY) }
         fun print(text: String) { out.write(text.toByteArray()); out.flush() }
+        /** Does [action] on the phone screen, then prints the screen it leads to, if Claude can read it. */
+        fun act(quiet: Long = 300, longest: Long = 2000, action: (PhoneScreenActivity) -> Unit) {
+            val screen = screen()
+            if (screen.held) {
+                // The user has taken the phone screen over: wait for it back, then let Claude decide again.
+                check(until(90_000) { !screen.held }) { "the user is using the phone screen (it's full size); try again later" }
+                PhoneAccessibility.instance?.let { print(it.ui(screen().displayId)) }
+                error("the user used the phone screen and has given it back; nothing was done. It may have changed")
+            }
+            val a11y = PhoneAccessibility.instance ?: return action(screen)
+            print(a11y.after(screen.displayId, quiet, longest) { action(screen) })
+        }
         when (op.optString(0)) {
             "start" -> {
-                val screen = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 } ?: run {
+                val screen = live() ?: run {
                     connect(ctx)
                     PhoneScreenActivity.failure = null
-                    ctx.startActivity(Intent(ctx, PhoneScreenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    val deadline = System.currentTimeMillis() + 10_000
-                    var started: PhoneScreenActivity? = null
-                    while (started == null && System.currentTimeMillis() < deadline) {
-                        PhoneScreenActivity.failure?.let { error(it) }
-                        started = PhoneScreenActivity.current?.takeIf { it.displayId >= 0 }
-                        if (started == null) Thread.sleep(100)
-                    }
-                    started ?: error("Android didn't open the phone screen. Open Cinder Lite and try again.")
+                    ctx.startActivity(Intent(ctx, PhoneScreenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        .putExtra(PhoneScreenActivity.EXTRA_FROM_TERMINAL, MainActivity.visible))
+                    until(10_000) { PhoneScreenActivity.failure?.let { error(it) }; live() != null }
+                    live() ?: error("Android didn't open the phone screen. Open Cinder Lite and try again.")
                 }
-                val spec = PhoneScreenActivity.spec(ctx)
-                print("phone screen open: display ${screen.displayId}, ${spec.width}x${spec.height}\n")
-                if (PhoneAccessibility.instance == null) print("Note: phone ui/click/type/scroll need " +
-                    "\"Cinder Lite phone screen\" on in Accessibility settings (run: phone setup)\n")
+                print("phone screen open: display ${screen.displayId}, ${screen.spec.width}x${screen.spec.height}\n")
+                if (PhoneAccessibility.instance == null) { remind(ctx); print("Note: $NO_ACCESSIBILITY\n") }
             }
-            "stop" -> PhoneScreenActivity.current?.let { main.post { it.release(); it.finish() } }
-            "id" -> print("${screen().displayId}\n")
+            "stop" -> PhoneScreenActivity.current?.let { main.post(it::close) }
             "shot" -> out.write(screen().shot())
             "setup" -> {
-                // This app's own page in Accessibility settings, where the user turns it on.
-                val component = ComponentName(ctx, PhoneAccessibility::class.java).flattenToString()
-                val intent = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
-                    .putExtra(Intent.EXTRA_COMPONENT_NAME, component)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                runCatching { ctx.startActivity(intent) }.getOrElse {
-                    ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
+                PhoneAccessibility.openSettings(ctx)
                 print("Opened Accessibility settings on the phone. Turn on \"Cinder Lite phone screen\". If " +
                     "Android says it's a restricted setting: App info → ⋮ → Allow restricted settings, then try again.\n")
             }
-            "ui" -> print(a11y().ui(screen().displayId))
-            "click" -> a11y().click(arg(1).toInt())
-            "type" -> a11y().type(arg(1).toInt(), op.optString(2))
-            "scroll" -> a11y().scroll(arg(1).toInt(), arg(2))
-            else -> error("unknown phone operation: ${op.optString(0)}")
+            "ui" -> { val id = screen().displayId; print(a11y().ui(id)) }
+            "click" -> { val n = number(1).toInt(); act { a11y().click(n) } }
+            "type" -> { val n = number(1).toInt(); val text = op.optString(2); act { a11y().type(n, text) } }
+            "scroll" -> { val n = number(1).toInt(); val direction = arg(2); act { a11y().scroll(n, direction) } }
+            "tap" -> { val x = number(1); val y = number(2); act { it.tap(x, y) } }
+            "swipe" -> {
+                val (x1, y1, x2, y2) = (1..4).map(::number)
+                val ms = if (op.length() > 5) number(5).toLong().coerceIn(0, 10_000) else 300
+                act { it.swipe(x1, y1, x2, y2, ms) }
+            }
+            "key" -> { val code = PhoneScreenActivity.keyCode(arg(1)); act { it.key(code) } }
+            "text" -> { val text = arg(1); act { it.text(text) } }
+            "open" -> { val pkg = arg(1); act(quiet = 600, longest = 5000) { open(ctx, it.displayId, pkg) } }
+            else -> error("unknown phone operation '${op.optString(0)}'; see: phone help")
         }
+    }
+
+    /** A failure for the client to show. Shizuku dying mid-call has no message of its own. */
+    private fun why(e: Exception) = if (e is RemoteException) "lost the Shizuku service" else e.message ?: e.toString()
+
+    /** Polls [done] until it's true or [ms] pass; returns whether it came true. */
+    private fun until(ms: Long, done: () -> Boolean): Boolean {
+        val end = SystemClock.uptimeMillis() + ms
+        while (!done()) {
+            if (SystemClock.uptimeMillis() > end) return false
+            Thread.sleep(100)
+        }
+        return true
+    }
+
+    /**
+     * Launches [pkg]'s app on the phone screen. Only the shell may start activities there. Any
+     * package is visible to this app because it targets SDK 28, before package visibility filtering.
+     */
+    private fun open(ctx: Context, displayId: Int, pkg: String) {
+        val component = ctx.packageManager.getLaunchIntentForPackage(pkg)?.component?.flattenToShortString()
+            ?: error("no app to open for '$pkg' (list packages with: rish -c 'pm list packages')")
+        val output = sh(ctx, "am start --display $displayId -n '$component'")
+        check(output.lines().none { it.startsWith("Error") }) { output.trim() }
+    }
+
+    /** Runs [command] as the shell user; returns its output, stdout and stderr together. */
+    private fun sh(ctx: Context, command: String): String {
+        val shell = connect(ctx)
+        val (read, write) = ParcelFileDescriptor.createPipe()
+        return ParcelFileDescriptor.AutoCloseInputStream(read).use { output ->
+            val id = ParcelFileDescriptor.open(File("/dev/null"), ParcelFileDescriptor.MODE_READ_ONLY).use { none ->
+                write.use { shell.start(command, false, none, it, it) }
+            }
+            String(output.readBytes()).also { shell.waitFor(id) }
+        }
+    }
+
+    /** Tells the user, on the phone, what to turn on for Claude to read the phone screen; once a minute at most. */
+    private fun remind(ctx: Context) {
+        val now = System.currentTimeMillis()
+        if (now - reminded < 60_000) return
+        reminded = now
+        // A toast shows two lines at most.
+        val text = "Claude needs Settings → Accessibility → Cinder Lite phone screen turned on"
+        main.post { Toast.makeText(ctx, text, Toast.LENGTH_LONG).show() }
     }
 
     /** The bound [ShellService] if it's already connected, for the phone screen window. */
@@ -254,31 +308,33 @@ object ShizukuBridge {
 
     /** The bound [ShellService], binding it (and asking for Shizuku permission) if needed. */
     private fun connect(ctx: Context): IShellService {
-        // Shizuku hands its connection to apps when their process starts, so if it was started while
-        // Cinder Lite was already running, the app has to be reopened to pick it up.
-        if (!isRunning()) error("Shizuku isn't running. Start it in the Shizuku app. If it's already running, " +
-            "reopen Cinder Lite (⋮ → Stop, then open it again).")
-        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-            val answered = CountDownLatch(1)
-            var granted = false
-            requestPermission { granted = it; answered.countDown() }
-            answered.await(60, TimeUnit.SECONDS)
-            if (!granted) error("Shizuku permission wasn't granted. Allow Cinder Lite in the Shizuku app.")
-        }
-        service?.takeIf { it.asBinder().isBinderAlive }?.let { return it }
-
-        val bound = CountDownLatch(1)
-        val conn = object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                if (binder != null && binder.pingBinder()) service = IShellService.Stub.asInterface(binder)
-                bound.countDown()
+        synchronized(binding) {
+            // Shizuku hands its connection to an app when the app comes to the front, so after Shizuku
+            // starts, Cinder Lite picks it up once the user switches away and back.
+            if (!isRunning()) error("Shizuku isn't running. Start it in the Shizuku app. If it's already running, " +
+                "switch to another app and back to Cinder Lite.")
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                val answered = CountDownLatch(1)
+                var granted = false
+                requestPermission { granted = it; answered.countDown() }
+                answered.await(60, TimeUnit.SECONDS)
+                if (!granted) error("Shizuku permission wasn't granted. Allow Cinder Lite in the Shizuku app.")
             }
-            override fun onServiceDisconnected(name: ComponentName?) { service = null }
+            connected()?.let { return it }
+
+            val bound = CountDownLatch(1)
+            val conn = object : ServiceConnection {
+                override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                    if (binder != null && binder.pingBinder()) service = IShellService.Stub.asInterface(binder)
+                    bound.countDown()
+                }
+                override fun onServiceDisconnected(name: ComponentName?) { service = null }
+            }
+            connection = conn
+            main.post { runCatching { Shizuku.bindUserService(serviceArgs(ctx), conn) }.onFailure { bound.countDown() } }
+            bound.await(20, TimeUnit.SECONDS)
+            return service ?: error("couldn't start the Shizuku service")
         }
-        connection = conn
-        main.post { runCatching { Shizuku.bindUserService(serviceArgs(ctx), conn) }.onFailure { bound.countDown() } }
-        bound.await(20, TimeUnit.SECONDS)
-        return service ?: error("couldn't start the Shizuku service")
     }
 
     private fun serviceArgs(ctx: Context): Shizuku.UserServiceArgs {
@@ -292,22 +348,13 @@ object ShizukuBridge {
     }
 
     /** Copies a pipe from the service to one of the client's fds (its terminal, a pipe, a file). */
-    private fun copy(from: ParcelFileDescriptor, to: java.io.FileDescriptor) = thread(name = "rish-output") {
-        runCatching {
-            ParcelFileDescriptor.AutoCloseInputStream(from).use { input ->
-                val output = FileOutputStream(to)
-                val buf = ByteArray(8192)
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    output.write(buf, 0, n)
-                }
-            }
-        }
+    private fun copy(from: ParcelFileDescriptor, to: FileDescriptor) = thread(name = "rish-output") {
+        // FileOutputStream is unbuffered, so each chunk reaches the client as soon as it's read.
+        runCatching { ParcelFileDescriptor.AutoCloseInputStream(from).use { it.copyTo(FileOutputStream(to)) } }
     }
 
     private fun readLine(input: DataInputStream): String {
-        val bytes = java.io.ByteArrayOutputStream()
+        val bytes = ByteArrayOutputStream()
         while (true) {
             val b = input.read()
             if (b < 0 || b == '\n'.code) break

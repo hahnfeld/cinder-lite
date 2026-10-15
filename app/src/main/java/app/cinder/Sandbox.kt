@@ -95,11 +95,9 @@ class Sandbox(private val ctx: Context) {
         val libsStaged = wanted?.all { File(androidLib64, it).exists() } ?: fullRuntimeMarker.exists()
         if (linkerDst.canExecute() && libsStaged) return
 
-        if (!linkerDst.exists()) {
+        if (!linkerDst.canExecute()) {
             for (cand in listOf("/apex/com.android.runtime/bin/linker64", "/system/bin/linker64")) {
-                val ok = runCatching { File(cand).canonicalFile.copyTo(linkerDst, overwrite = true); true }
-                    .getOrDefault(false)
-                if (ok) { linkerDst.setExecutable(true, false); break }
+                if (runCatching { stage(File(cand), linkerDst, executable = true) }.isSuccess) break
             }
         }
 
@@ -118,10 +116,22 @@ class Sandbox(private val ctx: Context) {
             }.getOrNull() ?: continue
             for (so in files) {
                 val dst = File(androidLib64, so.name)
-                if (!dst.exists()) runCatching { so.canonicalFile.copyTo(dst, overwrite = true) }
+                if (!dst.exists()) runCatching { stage(so, dst) }
             }
         }
         if (full) fullRuntimeMarker.createNewFile()
+    }
+
+    /**
+     * Copies [from] (symlinks resolved) to [to] through a temp file: a copy that's cut short never
+     * leaves a truncated library that later runs would skip, and a running proot that has [to]
+     * mapped keeps its old file.
+     */
+    private fun stage(from: File, to: File, executable: Boolean = false) {
+        val part = File(to.path + ".part")
+        from.canonicalFile.copyTo(part, overwrite = true)
+        if (executable) part.setExecutable(true, false)
+        check(part.renameTo(to)) { "could not stage ${to.name}" }
     }
 
     /**
@@ -131,11 +141,15 @@ class Sandbox(private val ctx: Context) {
      */
     val prootLoader = File(libexec, "loader")
     val hasBash get() = File(rootfs, "bin/bash").exists()
-    /** What [installBaseTools] puts down; checked by a few telltale binaries. */
-    val hasBaseTools get() = hasBash && listOf("usr/bin/python3", "usr/bin/node").all { File(rootfs, it).exists() }
-
-    /** Absolute path of an imported executable, or null when it isn't installed yet. */
-    fun tool(name: String): File? = File(bin, name).takeIf { it.exists() && it.canExecute() }
+    /**
+     * What [installBaseTools] puts down, as apk itself records it. Installs from before apk could
+     * write its database have the files but no record, and get them installed (recorded) again.
+     */
+    val hasBaseTools get() = runCatching {
+        File(rootfs, "lib/apk/db/installed").useLines { lines -> lines.filter { it.startsWith("P:") }.toSet() }
+    }.getOrDefault(emptySet()).containsAll(listOf("P:bash", "P:python3", "P:nodejs"))
+    /** The base tools' telltale files, recorded or not. */
+    private val hasBaseFiles get() = hasBash && listOf("usr/bin/python3", "usr/bin/node").all { File(rootfs, it).exists() }
 
     /**
      * Claude Code's native install, as `claude install` lays it out under $HOME: a symlink to the
@@ -148,9 +162,9 @@ class Sandbox(private val ctx: Context) {
         get() = Files.isSymbolicLink(claudeLink.toPath()) &&
             File(claudeVersions, "versions").list()?.isNotEmpty() == true
 
-    fun env(): Array<String> {
+    fun env(): Map<String, String> {
         val path = listOf(bin.absolutePath, "/system/bin", "/system/xbin").joinToString(":")
-        val base = mapOf(
+        return mapOf(
             "HOME" to home.absolutePath,
             "PATH" to path,
             "TMPDIR" to tmp.absolutePath,
@@ -162,7 +176,6 @@ class Sandbox(private val ctx: Context) {
             "PROOT_TMP_DIR" to tmp.absolutePath,
             "LD_LIBRARY_PATH" to lib.absolutePath
         )
-        return base.map { "${it.key}=${it.value}" }.toTypedArray()
     }
 
     /**
@@ -269,7 +282,7 @@ class Sandbox(private val ctx: Context) {
      * run that way: it refuses to skip permission checks while it thinks it is root, and exits 1.
      */
     fun prootCommand(inner: String, asRoot: Boolean = false): Array<String> {
-        val proot = tool("proot")?.absolutePath ?: error("proot is not installed")
+        val proot = File(bin, "proot").takeIf { it.canExecute() }?.absolutePath ?: error("proot is not installed")
         ensureMountPoints()
         configureNetwork()
         configureRepositories()
@@ -328,6 +341,9 @@ class Sandbox(private val ctx: Context) {
         ) listOf("-b", "${Environment.getExternalStorageDirectory().absolutePath}:/sdcard") else emptyList()
         return listOfNotNull(
             proot,
+            // SELinux denies hard links in app storage; proot emulates them with symlinks (as
+            // Termux's proot-distro does). apk commits its database through one, git and npm use them.
+            "--link2symlink",
             if (asRoot) "-0" else null,
             "-r", rootfs.absolutePath,
             *androidBinds(),
@@ -349,7 +365,7 @@ class Sandbox(private val ctx: Context) {
     fun spawn(inner: String, asRoot: Boolean = false): Process {
         ensureLayout()
         val pb = ProcessBuilder(*prootCommand(inner, asRoot)).directory(workspace)
-        pb.environment().putAll(env().associate { it.substringBefore('=') to it.substringAfter('=') })
+        pb.environment().putAll(env())
         return pb.start()
     }
 
@@ -357,8 +373,8 @@ class Sandbox(private val ctx: Context) {
      * Installs the sandbox's helper commands from assets/helpers/ — sudo, the apk shim, xdg-open,
      * the Android-toolchain installers and friends (each script documents itself). bin/ is
      * /usr/local/bin; shims/ is first on PATH, for wrappers that must shadow a real binary
-     * (proot, getprop). Plus Claude's system-prompt brief and notification hooks, and a linker config for the staged
-     * bionic linker (see assets/linkerconfig/ld.config.txt).
+     * (proot, getprop). Plus Claude's system-prompt brief and notification hooks, and a linker config
+     * for the staged bionic linker (see assets/linkerconfig/ld.config.txt).
      */
     fun writeHelpers() {
         ensureLayout()
@@ -473,7 +489,6 @@ class Sandbox(private val ctx: Context) {
         } finally {
             installer.delete()
         }
-        File(bin, "claude").delete()   // the copy earlier versions of this app kept, now unused
         check(hasClaude) { "claude install did not complete" }
     }
 
@@ -505,13 +520,11 @@ class Sandbox(private val ctx: Context) {
         val packages = "bash coreutils findutils grep sed git ripgrep less curl python3 py3-pip nodejs npm " +
             "openssh-client make patch zip jq"
         log("apk add $packages …")
-        // Real apk under proot -0, its progress ("(12/45) Installing …") logged as it happens. Its
-        // trailing "database inconsistent" error is cosmetic — the files are already down (it
-        // fails to lock with SysV IPC, which Android lacks).
-        run("rm -f /lib/apk/db/lock; /sbin/apk add --no-cache $packages", asRoot = true, log = log) {
-            "System state may be inconsistent" !in it
-        }
-        check(hasBaseTools) { "bash, python3 or node is still missing" }
+        // Real apk under proot -0, its progress ("(12/45) Installing …") logged as it happens.
+        run("/sbin/apk add --no-cache $packages", asRoot = true, log = log)
+        // Offline, an install whose tools are only missing their record still has them all: carry
+        // on, and record them next launch.
+        check(hasBaseFiles) { "bash, python3 or node is still missing" }
     }
 
     /** Deletes [dir] and everything under it without following symlinks out of it. */
@@ -538,10 +551,10 @@ class Sandbox(private val ctx: Context) {
         })
     }
 
-    /** Runs [inner] in the sandbox, logging each line of its combined output that [keep] accepts. */
-    private fun run(inner: String, asRoot: Boolean = false, log: (String) -> Unit, keep: (String) -> Boolean = { true }) {
+    /** Runs [inner] in the sandbox, logging each line of its combined output. */
+    private fun run(inner: String, asRoot: Boolean = false, log: (String) -> Unit) {
         val p = spawn("$inner 2>&1", asRoot)
-        p.inputStream.bufferedReader().forEachLine { if (it.isNotBlank() && keep(it)) log("  ${it.trim()}") }
+        p.inputStream.bufferedReader().forEachLine { if (it.isNotBlank()) log("  ${it.trim()}") }
         p.waitFor()
     }
 
@@ -570,9 +583,9 @@ class Sandbox(private val ctx: Context) {
                         input.skipExactly(padded - size)
                     } else input.skipExactly(padded)
                 }
-                into != null -> {
+                else -> {
                     val rel = name.removePrefix("./")
-                    val target = File(into, rel)
+                    val target = File(requireNotNull(into), rel)
                     when (type) {
                         '5' -> { target.mkdirs(); input.skipExactly(padded) }
                         '2' -> {
@@ -592,7 +605,6 @@ class Sandbox(private val ctx: Context) {
                         }
                     }
                 }
-                else -> input.skipExactly(padded)
             }
         }
     }

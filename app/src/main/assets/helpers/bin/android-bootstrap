@@ -1,26 +1,17 @@
 #!/bin/sh
-# The crux of running Android/aarch64 (bionic) binaries in here at all.
+# Make Android/aarch64 (bionic) binaries self-contained inside this rootfs.
 #
-# A Termux binary like aapt2 has its ELF interpreter set to /system/bin/linker64 — which
-# on modern Android is only a symlink into /apex/com.android.runtime, a chain proot can't
-# reliably canonicalise (hence the old "can't sanitize binding /apex" and "linker64: not
-# found"). It also expects its .so files under $PREFIX/lib and the bionic partitions,
-# which likewise don't survive translation.
-#
-# The fix is to stop depending on any of that resolving: copy the REAL linker and a flat
-# set of the bionic .so files out of the bound host tree into fixed rootfs paths, then
-# rewrite every Android ELF so its interpreter and rpath point straight at them. After
-# this the binaries are self-contained and run without /apex or /system needing to work.
-
-# Make Android/aarch64 (bionic) binaries self-contained inside this rootfs. The linker
-# and flat bionic libs are staged in from the app side (proot can't read /apex under
-# this SELinux domain); this script does the patchelf pass. Safe to re-run any time an
-# Android binary reports "not found" for its loader or a library.
+# A Termux binary like aapt2 has its ELF interpreter set to /system/bin/linker64, which on
+# modern Android is only a symlink into /apex, a chain proot can't canonicalise under this
+# SELinux domain. It also expects its .so files under $PREFIX/lib and the bionic partitions,
+# which likewise don't survive translation. So the app stages the REAL linker and a flat set
+# of the bionic .so files into fixed rootfs paths (it can read /apex; proot can't), and this
+# script rewrites every Android ELF so its interpreter and rpath point straight at them.
+# Safe to re-run any time an Android binary reports "not found" for its loader or a library.
 set -e
 ALIB=/usr/local/androidlib64           # flat directory of bionic .so files (app-staged)
-ALIBEXEC=/usr/local/androidlibexec      # the copied dynamic linker + nested proot
+ALIBEXEC=/usr/local/androidlibexec      # the staged dynamic linker (app-staged)
 PREFIX=/data/data/com.termux/files/usr
-mkdir -p "$ALIB" "$ALIBEXEC" /usr/local/shims
 
 # By default the app stages only the few libs nested proot needs. Termux binaries need
 # the device's whole bionic set (~200 MB), which only the app can read: ask it, and wait.
@@ -36,22 +27,9 @@ fi
 [ -x "$ALIBEXEC/linker64" ] || { echo "! no linker64 staged — Android binaries can't run"; exit 1; }
 echo "linker + $(ls -1 "$ALIB" 2>/dev/null | wc -l) bionic libs staged"
 
-# patchelf lives in Alpine's community repo. The app writes both main+community into
-# /etc/apk/repositories, but if this rootfs predates that (or the file got reset), enable
-# community here too and retry — patchelf is essential to the patch pass.
-if ! command -v patchelf >/dev/null 2>&1; then
-  apk add patchelf >/dev/null 2>&1 || true
-  if ! command -v patchelf >/dev/null 2>&1; then
-    REL=$(cut -d. -f1,2 /etc/alpine-release 2>/dev/null || echo edge)
-    REPO=/etc/apk/repositories
-    grep -q '/community' "$REPO" 2>/dev/null || \
-      echo "https://dl-cdn.alpinelinux.org/alpine/v$REL/community" >> "$REPO"
-    echo "enabling community repo and retrying patchelf..."
-    apk add patchelf 2>&1 | grep -vi 'inconsistent' | tail -2 || true
-  fi
-fi
-command -v patchelf >/dev/null 2>&1 || {
-  echo "! patchelf still unavailable (apk/network problem). Check: apk add patchelf"; exit 1; }
+# patchelf is in Alpine's community repo, which the app enables on every launch.
+command -v patchelf >/dev/null 2>&1 || apk add patchelf >/dev/null || {
+  echo "! could not install patchelf (apk add patchelf)"; exit 1; }
 RPATH="$ALIB:$PREFIX/lib"
 
 # (a) Executables and libraries under the termux prefix (aapt2 and its libraries, …). An
@@ -122,9 +100,8 @@ if [ -z "$CC_NO_REPAIR" ]; then
     echo "installing termux packages:$pkgs"
     CC_NO_REPAIR=1 termux-install $pkgs 2>&1 | grep -E '^[[:space:]]*[+!]' || true
     # re-apply rpath so the newly landed libs are found by everything
-    RP="$ALIB:$PREFIX/lib"
     for so in $(find "$PREFIX/lib" -maxdepth 1 -name '*.so*' -type f 2>/dev/null); do
-      patchelf --set-rpath "$RP" "$so" 2>/dev/null || true
+      patchelf --set-rpath "$RPATH" "$so" 2>/dev/null || true
     done
     echo "repair pass complete"
   else

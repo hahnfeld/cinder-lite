@@ -1,11 +1,13 @@
 package app.cinder;
 
+import android.view.InputEvent;
 import android.view.Surface;
 
 // Runs shell commands for the sandbox's `rish`, and owns the phone screen's virtual display, inside
 // a Shizuku user service (adb-shell uid).
 interface IShellService {
-    // Shizuku calls this (transaction 16777115) when it tears the service down.
+    // Shizuku calls this when it tears the service down: transaction 16777115, which is this id plus
+    // IBinder.FIRST_CALL_TRANSACTION (1).
     void destroy() = 16777114;
 
     // Starts `sh -c command` (or `sh -i` when interactive) with its stdio wired to the given fds.
@@ -25,4 +27,8 @@ interface IShellService {
     void setSurface(int displayId, in Surface surface) = 5;
 
     void releaseDisplay(int displayId) = 6;
+
+    // Sends a touch or key event to the display, as `input -d` would but without starting a process.
+    // Returns false if Android refused it.
+    boolean inject(int displayId, in InputEvent event) = 7;
 }

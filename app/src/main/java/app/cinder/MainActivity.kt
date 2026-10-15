@@ -2,6 +2,7 @@ package app.cinder
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -19,7 +20,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
-import android.view.inputmethod.InputMethodManager
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -41,9 +42,9 @@ import kotlin.concurrent.thread
  * keyboard lacks. While the sandbox is being set up, a plain log stands in for the terminal.
  *
  * Two terminals — Claude Code and a shell — each keep their own session; ⋮ switches between them
- * without stopping either. Sessions and setup state live in the companion object, not the activity:
- * the foreground service keeps the process (and so them) alive while the activity comes and goes. Background
- * threads reach whichever activity is current through [ui].
+ * without stopping either. Sessions and setup state live in the companion object, not the
+ * activity: the foreground service keeps the process (and so them) alive while the activity comes
+ * and goes. Background threads reach whichever activity is current through [ui].
  */
 class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
@@ -60,6 +61,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         ui = this
         sandbox = Sandbox(applicationContext)
         fontSize = sp(11f)
+        if (autocorrect == null) autocorrect = Autocorrect(applicationContext) { sessions[Tab.Claude]?.write(it) }
 
         terminal = TerminalView(this, null).apply {
             setTerminalViewClient(this@MainActivity)
@@ -126,8 +128,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     /**
      * Gets the sandbox ready — unpacking the bundled runtime, installing the latest Claude Code,
-     * installing the base tools — and then starts Claude. Each step is skipped when already done, so on an
-     * installed device this goes straight to launching. Only one setup runs at a time.
+     * installing the base tools — and then starts Claude. Each step is skipped when already done, so
+     * on an installed device this goes straight to launching. Only one setup runs at a time.
      */
     private fun boot(reset: Boolean = false) {
         if (!busy.compareAndSet(false, true)) return
@@ -165,6 +167,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     /** Switches the screen to [tab], starting its session the first time. The other keeps running. */
     private fun show(tab: Tab) {
+        autocorrect?.forget()
         shown = tab
         sessions[tab]?.let { attach(it) } ?: restart(tab)
     }
@@ -215,6 +218,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         fun send(keyCode: Int, mod: Int = 0) = { _: View ->
             // handleKeyCode dereferences the emulator, which exists only once a session is attached
             // and laid out — not during setup.
+            autocorrect?.forget()
             if (terminal.currentSession?.emulator != null) terminal.handleKeyCode(keyCode, mod)
         }
         key("esc", send(KeyEvent.KEYCODE_ESCAPE))
@@ -239,6 +243,11 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         menu.add(other.title).setOnMenuItemClickListener { show(other); true }
         menu.add("Restart ${shown.title}").setOnMenuItemClickListener { restart(shown); true }
         menu.add("Stop").setOnMenuItemClickListener { stop(applicationContext); true }
+        menu.add("Autocorrect").setCheckable(true).setChecked(autocorrecting(this@MainActivity))
+            .setOnMenuItemClickListener {
+                prefs(this@MainActivity).edit().putBoolean(AUTOCORRECT, !autocorrecting(this@MainActivity)).apply()
+                true
+            }
         menu.add("Shizuku").setCheckable(true).setChecked(ShizukuBridge.isEnabled(this@MainActivity))
             .setOnMenuItemClickListener { toggleShizuku(); true }
         menu.add("Reinstall sandbox").setOnMenuItemClickListener {
@@ -254,6 +263,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private fun toggleShizuku() {
         val app = applicationContext
         fun say(text: String) = Toast.makeText(app, text, Toast.LENGTH_LONG).show()
+        fun on() { say("Shizuku on: rish and adb shell work in the sandbox"); askPhoneAccess() }
         when {
             ShizukuBridge.isEnabled(app) -> {
                 ShizukuBridge.setEnabled(app, false)
@@ -264,18 +274,36 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             else -> {
                 ShizukuBridge.setEnabled(app, true)
                 when {
-                    !ShizukuBridge.isRunning() -> say("Shizuku on. Start Shizuku in its app. If it's already " +
-                        "running, reopen Cinder Lite (⋮ → Stop, then open it again)")
-                    ShizukuBridge.hasPermission() -> say("Shizuku on: rish and adb shell work in the sandbox")
+                    !ShizukuBridge.isRunning() -> say("Shizuku on. Start Shizuku in its app, then come back to " +
+                        "Cinder Lite")
+                    ShizukuBridge.hasPermission() -> on()
                     else -> ShizukuBridge.requestPermission { granted ->
                         runOnUiThread {
-                            say(if (granted) "Shizuku on: rish and adb shell work in the sandbox"
-                                else "Shizuku on, but permission was denied. rish will ask again")
+                            if (granted) on() else say("Shizuku on, but permission was denied. rish will ask again")
                         }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Asks the user to turn on the accessibility service that lets Claude read and tap the phone
+     * screen (`phone` in the sandbox), unless it's on already. Android won't let an app turn it on.
+     */
+    private fun askPhoneAccess() {
+        if (PhoneAccessibility.instance != null || isDestroyed) return
+        AlertDialog.Builder(this)
+            .setTitle("Phone screen access")
+            .setMessage("With Shizuku on, Claude can also use apps on a separate phone screen, in a small " +
+                "floating window, while you keep using yours. To read and tap what's on it, Claude needs " +
+                "Cinder Lite's accessibility service.\n\nOn the next screen, turn on \"Cinder Lite phone " +
+                "screen\". If Android says it's a restricted setting, tap App info here instead, then ⋮ → " +
+                "Allow restricted settings, and turn it on in Settings → Accessibility.")
+            .setPositiveButton("Open settings") { _, _ -> PhoneAccessibility.openSettings(this) }
+            .setNeutralButton("App info") { _, _ -> PhoneAccessibility.openAppInfo(this) }
+            .setNegativeButton("Not now", null)
+            .show()
     }
 
     /**
@@ -298,7 +326,9 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     private fun showKeyboard() {
         terminal.requestFocus()
-        getSystemService(InputMethodManager::class.java).showSoftInput(terminal, 0)
+        // Not InputMethodManager.showSoftInput: Android drops that when it arrives before the window
+        // is ready for the keyboard, as it can at launch. This waits until it is.
+        window.insetsController?.show(WindowInsets.Type.ime())
     }
 
     private fun sp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics).toInt()
@@ -316,9 +346,16 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     /** A finished session says "Press Enter to start it again". */
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
-        if (keyCode != KeyEvent.KEYCODE_ENTER || session.isRunning) return false
-        restart(tabOf(session) ?: return false)
-        return true
+        if (keyCode == KeyEvent.KEYCODE_ENTER && !session.isRunning) {
+            restart(tabOf(session) ?: return false)
+            return true
+        }
+        val fix = corrector(session) ?: return false
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DEL -> fix.backspace()
+            KeyEvent.KEYCODE_ENTER -> fix.typed('\r'.code)
+            else -> { if (e.unicodeChar == 0) fix.forget(); false }   // characters arrive in onCodePoint
+        }
     }
 
     /** Sticky: one press of the ctrl key applies to the next key typed. */
@@ -333,7 +370,14 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     override fun readAltKey() = false
     override fun readShiftKey() = false
     override fun readFnKey() = false
-    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession) = false
+    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
+        val fix = corrector(session) ?: return false
+        if (ctrlDown) { fix.forget(); return false }
+        return fix.typed(codePoint)
+    }
+
+    /** Claude's prompt gets autocorrect (⋮ → Autocorrect, on by default); the shell never does. */
+    private fun corrector(session: TerminalSession) = autocorrect.takeIf { session === sessions[Tab.Claude] && autocorrecting(this) }
     override fun onEmulatorSet() {}
 
     // ---------------- TerminalSessionClient ----------------
@@ -417,6 +461,10 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
         // Outlive the activity; touched on the main thread only.
         private val sessions = mutableMapOf<Tab, TerminalSession>()
+        private var autocorrect: Autocorrect? = null
+        private const val AUTOCORRECT = "autocorrect"
+        private fun prefs(ctx: Context) = ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE)
+        private fun autocorrecting(ctx: Context) = prefs(ctx).getBoolean(AUTOCORRECT, true)
         private var shown = Tab.Claude
         private val current get() = sessions[shown]
         private var ui: MainActivity? = null
@@ -452,7 +500,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 // finds no session and boots, which goes straight to launching.
                 val activity = ui ?: return@post
                 sessions[tab]?.finishIfRunning()
-                val s = TerminalSession(argv[0], sandbox.workspace.absolutePath, argv, sandbox.env(), 2000, activity)
+                val env = sandbox.env().map { "${it.key}=${it.value}" }.toTypedArray()
+                val s = TerminalSession(argv[0], sandbox.workspace.absolutePath, argv, env, 2000, activity)
                 sessions[tab] = s
                 shown = tab
                 activity.attach(s)
@@ -460,10 +509,14 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             }
         }
 
-        /** Ends both sessions, the keep-alive service and the app: ⋮ → Stop, or the notification's Stop. */
+        /**
+         * Ends both sessions, the phone screen, the keep-alive service and the app: ⋮ → Stop, or the
+         * notification's Stop.
+         */
         fun stop(ctx: Context) {
             main.post {
                 finishAll()
+                PhoneScreenActivity.current?.close()
                 SessionService.stop(ctx)
                 ui?.finishAndRemoveTask()
             }

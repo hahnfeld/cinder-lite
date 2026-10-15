@@ -1,9 +1,15 @@
 package app.cinder
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
@@ -12,7 +18,10 @@ import android.view.accessibility.AccessibilityWindowInfo
 /**
  * How Claude reads and operates the phone screen (`phone ui`, `click`, `type`, `scroll`): the
  * screen's elements as a numbered list, and actions on them by number. It only ever looks at the
- * phone screen's display, and only when a `phone` command asks; it ignores accessibility events.
+ * phone screen's display, and only when a `phone` command asks; it listens to accessibility events
+ * only while waiting for the phone screen to settle after an action. Each `phone` command runs on its
+ * own thread, so [ui] and [after] are synchronized; [click], [type] and [scroll] only run inside
+ * [after], under the same lock.
  */
 class PhoneAccessibility : AccessibilityService() {
 
@@ -26,7 +35,44 @@ class PhoneAccessibility : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    /** The display [after] is waiting on, and when its screen last changed. */
+    @Volatile private var watched = -1
+    @Volatile private var changed = 0L
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        // Before Android 13 events don't carry their display, so any change counts.
+        if (event != null && (Build.VERSION.SDK_INT < 33 || event.displayId == watched)) changed = SystemClock.uptimeMillis()
+    }
+
+    /**
+     * Runs [action], waits for the display's screen to settle, and lists it as [ui] does, so each
+     * action shows Claude its result. Settled is [quiet] ms without a change, then the same list
+     * twice running (screens slide in without reporting changes); or [longest] ms at most: spinners
+     * and animations never stop, and the list is useful mid-way.
+     */
+    @Synchronized
+    fun after(displayId: Int, quiet: Long, longest: Long, action: () -> Unit): String {
+        val idle = serviceInfo   // a copy: no events, as in res/xml/phone_accessibility.xml
+        watched = displayId
+        serviceInfo = serviceInfo.apply { eventTypes = AccessibilityEvent.TYPES_ALL_MASK }
+        try {
+            action()
+            val start = SystemClock.uptimeMillis()   // the wait counts from the end of the action
+            changed = start
+            var shown: String? = null
+            while (SystemClock.uptimeMillis() - start < longest) {
+                if (SystemClock.uptimeMillis() - changed < quiet) { Thread.sleep(50); continue }
+                val list = ui(displayId)
+                if (list == shown) return list
+                shown = list
+                Thread.sleep(100)
+            }
+        } finally {
+            watched = -1
+            serviceInfo = idle
+        }
+        return ui(displayId)
+    }
 
     override fun onInterrupt() {}
 
@@ -35,6 +81,7 @@ class PhoneAccessibility : AccessibilityService() {
      * `[7] Button "Network & internet" (40,300,680,380) click`. Bounds are display pixels, the
      * same numbers as in a screenshot and for `phone tap`.
      */
+    @Synchronized
     @Suppress("DEPRECATION")   // isChecked: still the only form before Android 16
     fun ui(displayId: Int): String {
         val found = mutableListOf<AccessibilityNodeInfo>()
@@ -121,7 +168,23 @@ class PhoneAccessibility : AccessibilityService() {
     }
 
     companion object {
+        /** The running service: on in Accessibility settings, and allowed to run. */
         @Volatile var instance: PhoneAccessibility? = null
             private set
+
+        /** Opens this service's page in Accessibility settings, where the user turns it on. */
+        fun openSettings(ctx: Context) {
+            val component = ComponentName(ctx, PhoneAccessibility::class.java).flattenToString()
+            val intent = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+                .putExtra(Intent.EXTRA_COMPONENT_NAME, component)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { ctx.startActivity(intent) }.getOrElse {
+                ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
+
+        /** App info, where Android 13+ hides "Allow restricted settings" for sideloaded apps. */
+        fun openAppInfo(ctx: Context) = ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", ctx.packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }

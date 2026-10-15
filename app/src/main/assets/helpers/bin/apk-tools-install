@@ -1,12 +1,6 @@
 #!/bin/sh
-# APK reverse-engineering kit: pure-Java tools on Alpine's own musl JVM.
-
-# APK tooling, all running on Alpine's own musl JVM.
-#
-# apktool, jadx and dex2jar are pure Java, so they need no native Android anything —
-# only a JVM that works. (Native Android binaries like aapt2 are handled separately by
-# android-bootstrap, which copies the bionic linker + libs in; these tools skip all of
-# that by running on Alpine's own musl JVM.)
+# APK reverse-engineering kit: apktool and jadx, pure Java on Alpine's own musl JVM. They need
+# none of android-bootstrap's bionic linker and libs, only a JVM that works.
 set -e
 LIB=/usr/local/lib
 mkdir -p "$LIB"

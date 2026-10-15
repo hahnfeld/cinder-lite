@@ -79,7 +79,7 @@ class SessionService : Service() {
             return START_NOT_STICKY
         }
         startForeground(ID, build())
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val pm = getSystemService(PowerManager::class.java)
         (lock ?: pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "cinder:session").also {
             it.setReferenceCounted(false)
             lock = it
@@ -118,32 +118,29 @@ class SessionService : Service() {
             }
         }
         if (MainActivity.visible) return
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(ALERT_CHANNEL, "Claude Code alerts", NotificationManager.IMPORTANCE_HIGH)
-        )
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         nm.notify(
             ALERT_ID, Notification.Builder(this, ALERT_CHANNEL)
                 .setContentTitle(event.optString("title").ifBlank { "Claude Code" })
                 .setContentText(message)
                 .setSmallIcon(android.R.drawable.stat_notify_chat)
-                .setContentIntent(open)
+                .setContentIntent(openApp())
                 .setAutoCancel(true)
                 .build()
         )
     }
 
+    private fun openApp() =
+        PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+
     private fun build(): Notification {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "Claude Code session", NotificationManager.IMPORTANCE_LOW)
                 .apply { setShowBadge(false) }
-        )
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         val stop = PendingIntent.getService(
             this, 1, Intent(this, SessionService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
@@ -151,7 +148,7 @@ class SessionService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setContentTitle("Claude Code is running")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentIntent(open)
+            .setContentIntent(openApp())
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .setOngoing(true)
             .build()
@@ -175,7 +172,7 @@ class SessionService : Service() {
         }
 
         fun clearAlert(ctx: Context) {
-            (ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ALERT_ID)
+            ctx.getSystemService(NotificationManager::class.java).cancel(ALERT_ID)
         }
     }
 }

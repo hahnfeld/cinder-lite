@@ -1,23 +1,33 @@
 package app.cinder
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Rational
 import android.view.Display
+import android.view.InputDevice
+import android.view.InputEvent
+import android.view.KeyCharacterMap
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -27,58 +37,85 @@ import kotlin.concurrent.thread
  * The phone screen: a virtual display that Claude drives (`phone` in the sandbox), shown in a
  * picture-in-picture window. [ShellService] creates the display with adb-shell privileges and it
  * renders straight into this window's SurfaceView; the display lives exactly as long as the window.
+ * Expanded to full size, it's the user's: their touches go to the display, and Claude waits.
  */
 class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
 
     /** The display's size: the phone's own, scaled down so its long edge is [LONG_EDGE]. */
-    class Spec(val width: Int, val height: Int, val dpi: Int) {
-        val aspect get() = Rational(width, height)
-    }
+    class Spec(val width: Int, val height: Int, val dpi: Int)
 
-    private val spec by lazy { spec(this) }
-    private var shell: IShellService? = null
+    val spec by lazy { spec(this) }
+    @Volatile private var shell: IShellService? = null
     private lateinit var view: SurfaceView
     @Volatile var displayId = -1
         private set
+    /** The user has the window full size, to use the phone screen themselves. */
+    @Volatile var held = false
+        private set
+    /** Stopped while open: the phone is asleep, and the display's apps are paused with it. */
+    @Volatile var stopped = false
+        private set
     private var entered = false
     private var returned = false
-    private var stopped = false
     private val died = IBinder.DeathRecipient { runOnUiThread { finish() } }
 
+    @SuppressLint("ClickableViewAccessibility")   // the touches are the phone screen's, not a click here
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        shell = ShizukuBridge.connected()
-        if (shell == null) { failure = "lost the Shizuku service"; finish(); return }
-        shell!!.asBinder().linkToDeath(died, 0)
+        val shell = ShizukuBridge.connected() ?: run { failure = "lost the Shizuku service"; finish(); return }
+        shell.asBinder().linkToDeath(died, 0)
+        this.shell = shell
         view = SurfaceView(this)
         // A buffer the display's size, whatever size the window is, so screenshots are full size
         // and the display never has to change resolution as the window is resized.
         view.holder.setFixedSize(spec.width, spec.height)
         view.holder.addCallback(this)
+        view.setOnTouchListener { v, event -> held && forward(v, event) }
         setContentView(view)
         current = this
     }
 
     override fun onResume() {
         super.onResume()
-        // Into the PiP window once; after that the user may expand it, and Back shrinks it again.
-        if (!entered) { entered = true; if (!isInPictureInPictureMode) enterPictureInPictureMode(params()) }
+        // Into the PiP window once; after that the user may expand it (taking it over) and leave to
+        // shrink it again. Android refuses (or, without PiP support, throws) when PiP is unavailable.
+        if (entered) return
+        entered = true
+        if (!isInPictureInPictureMode && !runCatching { enterPictureInPictureMode(params()) }.getOrDefault(false)) {
+            failure = "Android won't show the phone screen in picture-in-picture: this phone doesn't support it, or " +
+                "it's off for Cinder Lite (Settings → Apps → Special app access → Picture-in-picture)"
+            close()
+        }
     }
 
     override fun onPictureInPictureModeChanged(inPip: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(inPip, newConfig)
+        held = !inPip && !stopped
+        if (!inPip && stopped) close()   // dismissed: see onStop
         // The PiP window can't take keyboard focus, but Android leaves focus on it; hand it back to
-        // the terminal the first time, so the user (and the keyboard) carry on where they were.
-        if (!inPip && stopped) dismissed()
+        // the terminal the first time, so the user (and the keyboard) carry on where they were. Not
+        // when they were in another app: that would pull them out of it.
         if (inPip && !returned) {
             returned = true
-            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            if (intent.getBooleanExtra(EXTRA_FROM_TERMINAL, false)) {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
         }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        enterPictureInPictureMode(params())
+        // Full size, Back is the phone screen's own; leaving (Home, switching apps) shrinks it.
+        runCatching { key(KeyEvent.KEYCODE_BACK) }
+    }
+
+    /** The user's touch on the full-size window, scaled to the display and sent to it. */
+    private fun forward(v: View, event: MotionEvent): Boolean {
+        val copy = MotionEvent.obtain(event)
+        copy.transform(Matrix().apply { setScale(spec.width.toFloat() / v.width, spec.height.toFloat() / v.height) })
+        runCatching { inject(copy) }
+        copy.recycle()
+        return true
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -96,8 +133,8 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun onUserLeaveHint() {
-        // Leaving the expanded phone screen shrinks it back into PiP (Android 12+ does this itself).
-        if (Build.VERSION.SDK_INT < 31) enterPictureInPictureMode(params())
+        // Leaving the expanded phone screen (Home, switching apps) shrinks it back into PiP.
+        if (!isInPictureInPictureMode) runCatching { enterPictureInPictureMode(params()) }
     }
 
     override fun onStart() {
@@ -105,18 +142,19 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
         stopped = false
     }
 
+    /**
+     * The user dismissed the window (its ✕ or a swipe away): Android stops it and takes it out of
+     * PiP, in either order, so close the phone screen too. It also stops when the screen turns off,
+     * in PiP or full size, and expanding it leaves PiP while started; neither closes it.
+     */
     override fun onStop() {
         super.onStop()
         stopped = true
-        if (entered && !isInPictureInPictureMode) dismissed()
+        if (entered && !isInPictureInPictureMode && getSystemService(PowerManager::class.java).isInteractive) close()
     }
 
-    /**
-     * The user dismissed the window (its ✕ or a swipe away): Android stops it and takes it out of
-     * PiP, in either order, so close the phone screen too. In PiP it also stops when the screen turns
-     * off, and expanding it leaves PiP while started; neither closes it.
-     */
-    private fun dismissed() {
+    /** Closes the window, the display and the apps on it. */
+    fun close() {
         release()
         finish()
     }
@@ -127,14 +165,67 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
     }
 
     /** Closes the display (and the apps on it). Safe to call twice. */
-    fun release() {
+    private fun release() {
         if (current === this) current = null
+        held = false   // nothing left to wait for
         val shell = shell ?: return
         this.shell = null
         runCatching { shell.asBinder().unlinkToDeath(died, 0) }
         // Closing the display's apps takes a moment; not on the main thread.
         val id = displayId
         if (id >= 0) thread { runCatching { shell.releaseDisplay(id) } }
+    }
+
+    fun tap(x: Float, y: Float) {
+        val now = SystemClock.uptimeMillis()
+        touch(now, now, MotionEvent.ACTION_DOWN, x, y)
+        touch(now, now, MotionEvent.ACTION_UP, x, y)
+    }
+
+    fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, ms: Long) {
+        val down = SystemClock.uptimeMillis()
+        var x = x1
+        var y = y1
+        touch(down, down, MotionEvent.ACTION_DOWN, x, y)
+        try {
+            val steps = maxOf(1, (ms / 16).toInt())   // a move per frame
+            for (i in 1..steps) {
+                Thread.sleep(ms / steps)
+                x = x1 + (x2 - x1) * i / steps
+                y = y1 + (y2 - y1) * i / steps
+                touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x, y)
+            }
+        } catch (e: Exception) {
+            // Never leave a finger down on the display.
+            runCatching { touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, x, y) }
+            throw e
+        }
+        touch(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x2, y2)
+    }
+
+    /** Presses a key, a KeyEvent code ([keyCode] finds one by name). */
+    fun key(code: Int) {
+        val now = SystemClock.uptimeMillis()
+        for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+            inject(KeyEvent(now, now, action, code, 0).apply { source = InputDevice.SOURCE_KEYBOARD })
+        }
+    }
+
+    /** Types [text] into the focused field, key by key. */
+    fun text(text: String) {
+        val events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(text.toCharArray())
+            ?: error("phone text only types keyboard characters. Use phone type N 'text' instead")
+        events.forEach { inject(it.apply { source = InputDevice.SOURCE_KEYBOARD }) }
+    }
+
+    private fun touch(down: Long, time: Long, action: Int, x: Float, y: Float) {
+        val event = MotionEvent.obtain(down, time, action, x, y, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
+        try { inject(event) } finally { event.recycle() }
+    }
+
+    private fun inject(event: InputEvent) {
+        val shell = shell ?: error("the phone screen is closing")
+        check(shell.inject(displayId, event)) { "Android refused input to the phone screen" }
     }
 
     /** A PNG of the phone screen, at the display's own size. */
@@ -148,8 +239,8 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
         return ByteArrayOutputStream().also { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
     }
 
-    private fun params() = PictureInPictureParams.Builder().setAspectRatio(spec.aspect).apply {
-        if (Build.VERSION.SDK_INT >= 31) setAutoEnterEnabled(true).setSeamlessResizeEnabled(false)
+    private fun params() = PictureInPictureParams.Builder().setAspectRatio(Rational(spec.width, spec.height)).apply {
+        if (Build.VERSION.SDK_INT >= 31) setSeamlessResizeEnabled(false)
     }.build()
 
     companion object {
@@ -160,6 +251,12 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
             private set
         /** Why the last start failed, for the bridge to report. */
         @Volatile var failure: String? = null
+        /** Set when `phone start` comes from the terminal on screen, to give it the focus back. */
+        const val EXTRA_FROM_TERMINAL = "from-terminal"
+
+        /** A key by name: `back`, `enter`, `KEYCODE_TAB` (the prefix and case are optional), or a number. */
+        fun keyCode(name: String) = KeyEvent.keyCodeFromString(name.uppercase())
+            .takeIf { it != KeyEvent.KEYCODE_UNKNOWN } ?: throw IllegalArgumentException("unknown key '$name'")
 
         /**
          * Portrait, the phone's own aspect ratio and dp size (so apps lay out as they do on the

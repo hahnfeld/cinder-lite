@@ -8,10 +8,9 @@
 
 SNAP=/root/.cinder/getprop.txt
 [ -f "$SNAP" ] || { echo "(getprop snapshot not ready yet)"; exit 0; }
-DATA=$(cat "$SNAP")
 # getprop with no name (or a flag) lists everything; getprop <name> prints one value.
 if [ -z "$1" ] || [ "${1#-}" != "$1" ]; then
-  printf '%s\n' "$DATA"
+  cat "$SNAP"
 else
-  printf '%s\n' "$DATA" | sed -n "s/^\[$1\]: \[\(.*\)\]$/\1/p"
+  sed -n "s/^\[$1\]: \[\(.*\)\]$/\1/p" "$SNAP"
 fi

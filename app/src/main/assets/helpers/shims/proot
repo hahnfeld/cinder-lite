@@ -1,14 +1,17 @@
 #!/bin/sh
-# A nested-safe `proot` for the agent. /usr/local/shims is first on PATH, so this shadows the
-# native /usr/local/bin/proot (which the app launches the OUTER sandbox with and must stay
-# unpatched). Same explicit-linker trick as sudo — no patchelf needed.
-
-LNK=/usr/local/androidlibexec/linker64
-if [ -x "$LNK" ]; then
-  exec env PROOT_LOADER=/usr/local/libexec/loader \
-    PROOT_TMP_DIR=/tmp \
-    LD_LIBRARY_PATH=/usr/local/androidlib64:/usr/local/androidlib \
-    "$LNK" /usr/local/bin/proot "$@"
-else
-  exec /usr/local/bin/proot "$@"
-fi
+# A nested-safe `proot` for the agent and for sudo. /usr/local/shims is first on PATH, so this
+# shadows the native /usr/local/bin/proot (which the app launches the OUTER sandbox with and must
+# stay unpatched).
+#
+# proot is a bionic binary, and under this app's SELinux domain (untrusted_app_27) its ELF
+# interpreter /system/bin/linker64 can't be resolved (proot can't sanitize /apex), so a plain
+# `exec proot` dies with "proot: not found". The app stages the real linker on every launch;
+# invoking it EXPLICITLY as `linker64 proot …` bypasses PT_INTERP entirely. LD_LIBRARY_PATH supplies
+# proot's own libs (libtalloc) and bionic libc.
+#
+# --link2symlink: SELinux denies hard links in app storage, and apk commits its database through
+# one. proot emulates them with symlinks instead, as Termux's proot-distro does.
+mkdir -p /tmp
+exec env PROOT_LOADER=/usr/local/libexec/loader PROOT_TMP_DIR=/tmp \
+  LD_LIBRARY_PATH=/usr/local/androidlib64:/usr/local/androidlib \
+  /usr/local/androidlibexec/linker64 /usr/local/bin/proot --link2symlink "$@"

@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Window content on demand only (phone ui / click / type / scroll); no gestures or screenshots. -->
+<!-- Window content on demand (phone ui / click / type / scroll). No events here: the service turns
+     them on only while it waits for the phone screen to settle after an action. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
-    android:description="@string/phone_accessibility_description"
-    android:notificationTimeout="500" />
+    android:description="@string/phone_accessibility_description" />

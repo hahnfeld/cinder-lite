@@ -1,26 +1,8 @@
 #!/bin/sh
-# `apk add` is the muscle memory for Alpine, and the agent will reach for it before it
-# reaches for sudo. /usr/local/bin comes first on PATH, so this shim shadows /sbin/apk and
-# routes the write-y subcommands through the fake-root helper.
-#
-# Real apk works under a nested proot -0: it extracts full dependency trees correctly.
-# apk-tools v3 does fail its final database write (it locks with a SysV semaphore, and
-# Android has no SysV IPC) — but that happens AFTER every file is extracted, so it's
-# cosmetic. The shim hides that one error, and exits non-zero only for real failures.
-
+# `apk add` is the muscle memory for Alpine, and the agent will reach for it before it reaches
+# for sudo. /usr/local/bin comes first on PATH, so this shim shadows /sbin/apk and routes the
+# write-y subcommands through the fake-root helper.
 case "$1" in
-  add|del|fix|upgrade)
-    # The harmless line reads "ERROR: System state may be inconsistent: failed to
-    # write database: Permission denied". Stream everything else as it happens (awk flushes
-    # each line, so "(12/45) Installing ..." shows up live) while keeping a copy to check
-    # for real failures once apk is done.
-    log=$(mktemp)
-    /usr/local/bin/sudo /sbin/apk --no-cache "$@" 2>&1 \
-      | awk '!/System state may be inconsistent/ { print; fflush() }' | tee "$log"
-    if grep -qiE 'unable to select|no such package|network error|UNTRUSTED' "$log"; then
-      rm -f "$log"; exit 1
-    fi
-    rm -f "$log"; exit 0 ;;
-  *)
-    exec /sbin/apk "$@" ;;
+  add|del|fix|upgrade) exec /usr/local/bin/sudo /sbin/apk --no-cache "$@" ;;
+  *) exec /sbin/apk "$@" ;;
 esac

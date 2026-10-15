@@ -15,7 +15,7 @@ tags:
 Cinder Lite is by Matt Hahnfeld: https://github.com/hahnfeld/cinder-lite
 
 Cinder is the project that worked out how to run Anthropic's real Claude Code CLI on an Android
-phone: a proot + Alpine sandbox, the musl binary, the targetSdk 28 trick, the SysV-IPC workaround for
+phone: a proot + Alpine sandbox, the musl binary, the targetSdk 28 trick, the nested-proot fake root for
 `apk`, and a full native chat UI on top. All of that groundwork is Cinder's, and this fork keeps its
 history (upstream is the first 24 commits).
 
@@ -23,7 +23,8 @@ Cinder Lite keeps Cinder's sandbox and drops its custom UI. Instead of driving `
 stream-json and re-rendering the conversation in Jetpack Compose, it shows **Claude Code's own
 terminal UI in a real terminal emulator** (Termux's). Everything the TUI already does (model
 picker, permission prompts, `/resume`, slash commands) comes from Claude Code itself, so the app
-is just the sandbox, a verified downloader and a terminal: three Kotlin files and a ~4.5 MB APK.
+is just the sandbox, a verified downloader and a terminal: four Kotlin files at its core (four
+more for the optional Shizuku features) and a ~4.5 MB APK.
 It installs as `app.cinderlite`, so it can sit alongside the original.
 
 > Unofficial and unaffiliated with Anthropic. Sideload only. arm64-v8a, Android 11+.
@@ -58,18 +59,24 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 | Shell | One-shot commands on Android's host shell | A real bash in the sandbox, kept alongside Claude |
 | Phone files | Upload/export buttons | Shared storage mounted at `/sdcard` |
 | Claude Code install | Latest from npm, unverified | Latest from npm, sha512-verified, then Claude Code's native install with self-updates |
-| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,150 lines in 3 Kotlin files |
+| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,500 lines in 4 Kotlin files, plus ~1,000 in 4 for the optional Shizuku features |
 | Release APK | ~33 MB (debug) | ~4.5 MB, signed, R8-shrunk |
 
 **Removed:** the stream-json bridge and transcript UI, markdown/LaTeX rendering, model/effort/
 permission pickers, the session-history drawer, the custom JNI PTY library, the in-app `notify`,
-`preview` and `install-apk` bridges, file upload/export, voice dictation, the diagnostics screen and
+`preview` and `install-apk` bridges, file upload/export, in-app dictation, the diagnostics screen and
 the 32-bit proot loader.
 
 **Added or changed:**
 - Two terminals, Claude and a shell, switched from the ⋮ menu without losing either.
 - An extra-keys row for what phone keyboards lack: esc, tab, ⇧tab (Claude Code's permission-mode
   switch), ctrl, arrows, and 🎤 for voice typing through the phone's own speech recognizer.
+- Autocorrect for Claude's prompt (⋮ → Autocorrect, on by default). A terminal takes keys raw, so
+  the keyboard can't correct them; instead Cinder Lite asks Android's spell checker (the keyboard's
+  own, on the phone) about each word as you finish it and fixes clear typos, the way Gboard does.
+  Backspace right after a fix undoes it. Only plain words are touched, never commands, paths or
+  code, and never in the shell. Gboard's top strip and number row can be hidden in Gboard's own
+  settings (Preferences → Suggestion strip, and Number row for passwords: the terminal counts as one).
 - `/login` opens the phone's browser through an `xdg-open` shim limited to http(s) links.
 - First-run setup that can't run twice at once, resumes after interruption, shows download and
   install progress, and preinstalls bash, git, ripgrep, Python, Node.js and common tools.
@@ -150,14 +157,20 @@ failed on every launch while everything looked fine. Renaming to `rootfs.tgz` pl
 never reads stdin. Upstream solved it with a small forkpty JNI library just for login. Cinder Lite
 runs everything in a PTY via Termux's terminal-emulator, so the TUI, login and resizing all just work.
 
-### 5. Android has no SysV IPC — so `apk` needed a workaround
+### 5. `apk` needs root and hard links, and Android allows neither
 
 Alpine's minirootfs ships no `/etc/resolv.conf`, so every request died with a DNS timeout until
-nameservers were written in from ConnectivityManager. Then apk failed its database write: apk-tools v3
-locks the DB with a SysV semaphore, and Android kernels are built without `CONFIG_SYSVIPC`. The
-workaround: run apk under a nested proot `-0` (userspace fake root), which extracts the full
-dependency tree correctly — the only failure is the final DB bookkeeping, which happens after every
-file is on disk. The side effect: apk can't remember what it installed, so `apk del` doesn't work.
+nameservers were written in from ConnectivityManager. apk also refuses to run unless it is root, and
+fakeroot needs a SysV IPC daemon that Android kernels (built without `CONFIG_SYSVIPC`) can't host, so
+`sudo` and the `apk` shim run it under a nested proot `-0` (userspace fake root) instead.
+
+That still left apk failing its database write with "Permission denied", which upstream put down to a
+SysV semaphore and treated as cosmetic, since every file is on disk by then. The real cause: SELinux
+denies hard links in an app's storage, and apk commits its database through one. Without the
+database apk forgot everything it installed, so `apk del` and `apk upgrade` didn't work and each
+`apk add` reinstalled shared dependencies. Cinder Lite runs proot with `--link2symlink`, as Termux's
+proot-distro does, which emulates hard links with symlinks, and apk keeps its records.
+Installs from before this fix get their base packages installed, and recorded, again on the next launch.
 
 ### 6. A long linker path can panic Android 15 kernels
 
@@ -259,8 +272,8 @@ Claude knows about all this: ask it something like *"how many apps are installed
 dark mode"* and it uses `rish` on its own. If Shizuku support is off or Shizuku isn't running, it
 tells you what to do.
 
-If you start Shizuku while Cinder Lite is already open, reopen Cinder Lite (⋮ → Stop, then open it
-again). Shizuku only hands its connection to an app when the app's process starts.
+If you start Shizuku while Cinder Lite is open, switch to another app and back: Shizuku hands its
+connection to an app when the app comes to the front. Your sessions keep running.
 
 ### The `adb` shim
 
@@ -303,15 +316,17 @@ sandbox   rish            exits with the command's exit status
 - **Output goes through pipes**, not straight to your terminal. Android's security policy (SELinux)
   doesn't let the shell user write to the app's terminal device, so the app copies the output
   across. Input travels the other way, from `rish` over the socket and into the command's stdin.
-- **Ctrl-C or closing `rish`** kills the command. When the setting is turned off, the bridge stops
-  listening and the Shizuku service is shut down.
+- **Ctrl-C or closing `rish`** kills the command and everything it started, so a pipeline like
+  `logcat | grep x` ends too. When the setting is turned off, the bridge stops listening and the
+  Shizuku service is shut down.
 
 ### Limits
 
 - **No real terminal.** Interactive `rish` is line-based, like piping into `adb shell`. Full-screen
   programs like `top` (without `-n 1`) or `vi` won't work, and there's no prompt editing.
 - **`rish -c` at a terminal gets no keyboard input.** Pipe the input in if a command needs it.
-- **Only Ctrl-C is passed on.** Other signals aren't forwarded.
+- **Signals end the command rather than reaching it.** Ctrl-C, SIGTERM and SIGHUP kill it; other
+  signals aren't forwarded.
 - **Commands see the phone's filesystem, not the sandbox's.** `/sdcard` is the same in both, but
   `/workspace`, `/tmp` and the rest of the sandbox live in Cinder Lite's private storage, which the
   shell user can't read. To hand a file to a `rish` command (an APK for `pm install`, say), put it
@@ -323,7 +338,7 @@ sandbox   rish            exits with the command's exit status
 With Shizuku on, Claude can also use apps for you, on a **separate virtual screen** shown in a
 picture-in-picture window that floats over everything, like a video. The apps it opens run there,
 not on your screen, so you can keep using your phone, watch what Claude is doing, drag the window
-anywhere, or tap it to expand it. Ask something like *"open Settings on the phone screen and tell me
+anywhere, or expand it to take it over. Ask something like *"open Settings on the phone screen and tell me
 the Android version"* and Claude uses the `phone` command:
 
 ```sh
@@ -339,17 +354,28 @@ phone key back
 phone stop                   # close it, and the apps on it
 ```
 
+Each action (`open`, `click`, `type`, `scroll`, `tap`, `swipe`, `text`, `key`) waits for the screen to
+settle and then lists it the way `phone ui` does (when Accessibility is on, below), so every step
+shows Claude its result.
+
 `phone ui` reads the screen through Android's accessibility API, the same way a screen reader does,
 so Claude works from real buttons and text fields rather than guessing from pictures. For that, turn
-on **Cinder Lite phone screen** in Settings → Accessibility once (`phone setup` opens the page; on a
-sideloaded install Android may first call it a restricted setting: App info → ⋮ → Allow restricted
-settings). Until then Claude can still use `phone shot` and coordinates. The service only reads the
-phone screen, and only when a `phone` command asks.
+on **Cinder Lite phone screen** in Settings → Accessibility once. Cinder Lite offers to take you there
+when you turn Shizuku on, and if Claude tries the phone screen without it, a message on the phone
+says what to turn on (on a sideloaded install Android may first call it a restricted setting: App
+info → ⋮ → Allow restricted settings). Until then Claude can still use `phone shot` and
+coordinates. The service only reads the phone screen, and only when a `phone` command asks.
+
+**Taking over.** Expand the window to full size and the phone screen is yours: touches go to its
+apps and Back is its Back. Claude's next action waits until you give it back, then tells Claude
+the screen may have changed. Swipe home or switch apps to shrink it back into its small window
+without closing it.
 
 How it works: Cinder Lite's Shizuku service creates the virtual display with adb-shell privileges,
 the same way scrcpy's `--new-display` does, and the display draws straight into the PiP window, with
-no video encoding or streaming. The display has its own focus and no keyboard, so taps and typing
-there never reach your screen, and yours never reach it. Closing the window (its ✕, a swipe, or
+no video encoding or streaming. Taps, swipes and keys reach it as input events from the Shizuku
+service, without starting a process for each. The display has its own focus and no keyboard, so
+taps and typing there never reach your screen, and yours never reach it. Closing the window (its ✕, a swipe, or
 `phone stop`) closes the display and the apps on it; they don't move onto your screen. Turning
 Shizuku off closes it too.
 
@@ -361,7 +387,11 @@ Limits:
   `phone ui` still sees them. Some refuse to run at all while an accessibility service is on.
 - With Android's Advanced Protection on, accessibility services from outside the Play Store are
   blocked, so only `phone shot` and coordinates work.
-- You watch rather than drive: Android keeps touches in a PiP window for its own controls.
+- In the small window you watch rather than drive: Android keeps its touches for its own controls.
+- While the phone is asleep, the phone screen's apps pause with it. Claude is told, and they carry
+  on when you turn the screen back on.
+- When you take it over, you can tap, scroll and go Back, but no keyboard comes up for its text
+  fields (it would type into your own screen's app); ask Claude to type instead.
 
 ### Be deliberate about turning it on
 

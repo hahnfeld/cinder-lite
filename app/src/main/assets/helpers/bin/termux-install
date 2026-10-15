@@ -23,10 +23,9 @@ NODEPS=
 [ $# -gt 0 ] || { echo "usage: termux-install [--no-deps] <package>..."; exit 2; }
 command -v dpkg-deb >/dev/null 2>&1 || apk add dpkg >/dev/null 2>&1 || { echo "! could not install dpkg (apk add dpkg)"; exit 1; }
 command -v wget >/dev/null 2>&1 || apk add wget >/dev/null 2>&1 || { echo "! could not install wget (apk add wget)"; exit 1; }
-# dpkg-deb shells out to `tar --warning=...` and needs xz/zstd to decompress data.tar.*.
-# BusyBox tar (Alpine's default, now first on PATH) rejects GNU's --warning flag, so a
-# real GNU tar plus the compressors must be installed or every .deb extract fails.
-apk add tar xz zstd >/dev/null 2>&1 || true
+# dpkg-deb needs xz and zstd to decompress a .deb's data.tar.* (extracting it is BusyBox tar's
+# job below).
+apk add xz zstd >/dev/null 2>&1 || true
 
 if [ ! -s "$MAP" ]; then
   echo "fetching package index..."
@@ -60,7 +59,7 @@ while [ -z "$NODEPS" ]; do
   [ "$(wc -l < "$WANT")" = "$before" ] && break
 done
 
-mkdir -p "$PREFIX/bin" "$PREFIX/lib"
+mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/tmp"
 if [ -n "$NODEPS" ]; then echo "installing $(wc -l < "$WANT") package(s), no dependencies..."; else echo "installing $(wc -l < "$WANT") package(s) with all dependencies..."; fi
 while IFS= read -r p; do
   file=$(grep -m1 "^$p	" "$MAP" | cut -f2)
@@ -82,7 +81,6 @@ done < "$WANT"
 # Termux's wrapper scripts start with #!/data/data/com.termux/files/usr/bin/sh, a path
 # that only exists inside Termux. Point the usual names at Alpine's equivalents so
 # those scripts can actually run here.
-mkdir -p "$PREFIX/bin" "$PREFIX/tmp"
 for name in sh env bash dirname basename uname sed grep awk cut head tail; do
   if [ ! -e "$PREFIX/bin/$name" ]; then
     real=$(command -v "$name" 2>/dev/null)

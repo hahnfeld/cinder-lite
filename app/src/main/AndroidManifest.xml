@@ -9,13 +9,7 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- To check whether the Shizuku app is installed. -->
-    <queries>
-        <package android:name="moe.shizuku.privileged.api" />
-    </queries>
 
     <application
         android:allowBackup="false"
@@ -42,11 +36,11 @@
              so being backgrounded is what would kill it. -->
         <service
             android:name=".SessionService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:exported="false" />
 
         <!-- The phone screen Claude drives (`phone` in the sandbox): a picture-in-picture window
-             showing a virtual display. Its own task, so the PiP never takes the terminal with it. -->
+             showing a virtual display. Its own task, so the PiP never takes the terminal with it;
+             configChanges, since recreating it would close the display and the apps on it. -->
         <activity
             android:name=".PhoneScreenActivity"
             android:exported="false"
@@ -54,9 +48,8 @@
             android:launchMode="singleTask"
             android:taskAffinity="${applicationId}.phone"
             android:excludeFromRecents="true"
-            android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode" />
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection" />
 
         <!-- How Claude reads and operates the phone screen. The user turns it on in Android's
              Accessibility settings; it only reads the phone screen, and only when asked. -->

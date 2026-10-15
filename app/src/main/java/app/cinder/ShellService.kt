@@ -3,8 +3,13 @@ package app.cinder
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.system.Os
+import android.util.Log
+import android.system.OsConstants
+import android.view.InputEvent
 import android.view.Surface
 import java.io.InputStream
 import java.io.OutputStream
@@ -25,10 +30,21 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
 
     constructor() : this(null)
 
-    private class Job(val process: Process, val output: List<Thread>)
+    private class Job(val process: Process, val output: List<Thread>) {
+        /** The shell's pid, which `setsid` makes its process group's id too (0 if unreadable). */
+        val group = runCatching { process.javaClass.getDeclaredField("pid").apply { isAccessible = true }.getInt(process) }
+            .getOrDefault(0)
+
+        /** Ends the shell and everything it started: Ctrl-C on `rish -c 'logcat | grep x'` ends both sides. */
+        fun end() {
+            if (group > 0) runCatching { Os.kill(-group, OsConstants.SIGTERM) }
+            process.destroy()
+        }
+    }
 
     private val jobs = ConcurrentHashMap<Int, Job>()
     private val ids = AtomicInteger()
+    private val displays = ConcurrentHashMap<Int, VirtualDisplay>()
 
     override fun start(
         command: String,
@@ -37,8 +53,9 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
         stdout: ParcelFileDescriptor,
         stderr: ParcelFileDescriptor
     ): Int {
-        val argv = if (interactive) listOf("/system/bin/sh", "-i") else listOf("/system/bin/sh", "-c", command)
-        val process = ProcessBuilder(argv).start()
+        // Each command in a process group of its own, so kill() reaches all of it.
+        val shell = if (interactive) listOf("/system/bin/sh", "-i") else listOf("/system/bin/sh", "-c", command)
+        val process = ProcessBuilder(listOf("/system/bin/setsid") + shell).start()
         pump(ParcelFileDescriptor.AutoCloseInputStream(stdin), process.outputStream)
         val output = listOf(
             pump(process.inputStream, ParcelFileDescriptor.AutoCloseOutputStream(stdout)),
@@ -56,17 +73,15 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
     }
 
     override fun kill(id: Int) {
-        jobs[id]?.process?.destroy()
+        jobs[id]?.end()
     }
 
     @Synchronized   // waits for a releaseDisplay in progress, so its apps are closed before exiting
     override fun destroy() {
-        jobs.values.forEach { it.process.destroy() }
+        jobs.values.forEach { it.end() }
         displays.keys.toList().forEach(::releaseDisplay)
         exitProcess(0)
     }
-
-    private val displays = ConcurrentHashMap<Int, VirtualDisplay>()
 
     override fun createDisplay(width: Int, height: Int, dpi: Int, surface: Surface): Int {
         // createVirtualDisplay checks that the caller's package matches its uid, here the shell's.
@@ -90,6 +105,26 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
         displays[displayId]?.surface = surface
     }
 
+    /**
+     * Sends [event] to the display, the way scrcpy does as the shell: InputManager's hidden
+     * injectInputEvent, after the event's hidden setDisplayId.
+     */
+    private val injector by lazy {
+        val manager = runCatching { Class.forName("android.hardware.input.InputManagerGlobal").getMethod("getInstance").invoke(null) }
+            .getOrElse { InputManager::class.java.getMethod("getInstance").invoke(null) }!!
+        val inject = manager.javaClass.getMethod("injectInputEvent", InputEvent::class.java, Int::class.java)
+        val setDisplayId = InputEvent::class.java.getMethod("setDisplayId", Int::class.java)
+        return@lazy { event: InputEvent, displayId: Int ->
+            setDisplayId.invoke(event, displayId)
+            inject.invoke(manager, event, 0) as Boolean   // INJECT_INPUT_EVENT_MODE_ASYNC
+        }
+    }
+
+    override fun inject(displayId: Int, event: InputEvent) = runCatching { injector(event, displayId) }
+        .onFailure { if (!injectFailed) { injectFailed = true; Log.w("cinder-rish", "can't inject input", it) } }
+        .getOrDefault(false)
+    @Volatile private var injectFailed = false   // logged once: the user's touches would repeat it
+
     @Synchronized
     override fun releaseDisplay(displayId: Int) {
         val display = displays.remove(displayId) ?: return
@@ -111,10 +146,12 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
     }
 
     /**
-     * scrcpy's --new-display flags (most are hidden, so they're written as numbers), without system
-     * decorations (a home screen and taskbar Claude doesn't need) and with STEAL_TOP_FOCUS_DISABLED: a
-     * trusted display with its own focus, so the phone screen never takes focus or input from the
-     * user's own screen, and closing it closes its apps rather than moving them onto the user's screen.
+     * scrcpy's --new-display flags (most are hidden, so they're written as numbers), with these
+     * changes: no system decorations (a home screen and taskbar Claude doesn't need); no display group
+     * of its own (OWN_DISPLAY_GROUP, ALWAYS_UNLOCKED, DEVICE_DISPLAY_GROUP), so the phone screen sleeps
+     * and wakes with the phone's own instead of on its own timer; and STEAL_TOP_FOCUS_DISABLED. That
+     * makes a trusted display with its own focus, so it never takes focus or input from the user's
+     * screen, and closing it closes its apps rather than moving them onto the user's screen.
      */
     private fun displayFlags(): Int {
         var flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
@@ -125,13 +162,10 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
             (1 shl 8)       // DESTROY_CONTENT_ON_REMOVAL
         if (Build.VERSION.SDK_INT >= 33) {
             flags = flags or (1 shl 10) or   // TRUSTED
-                (1 shl 11) or                // OWN_DISPLAY_GROUP
-                (1 shl 12) or                // ALWAYS_UNLOCKED
                 (1 shl 13)                   // TOUCH_FEEDBACK_DISABLED
         }
         if (Build.VERSION.SDK_INT >= 34) {
             flags = flags or (1 shl 14) or   // OWN_FOCUS
-                (1 shl 15) or                // DEVICE_DISPLAY_GROUP
                 (1 shl 16)                   // STEAL_TOP_FOCUS_DISABLED: taps there don't take the user's keys
         }
         return flags

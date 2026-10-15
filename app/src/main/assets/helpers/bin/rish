@@ -61,14 +61,15 @@ def main():
             pass
 
     # A one-shot command at a terminal gets no stdin (like `adb shell cmd`); piped input is forwarded.
+    # Phone operations take none.
     if phone is None and (interactive or not os.isatty(0)):
         threading.Thread(target=forward_stdin, daemon=True).start()
-    else:
+    elif phone is None:
         frame(b"E")
 
-    def interrupted(*_):
+    def interrupted(signum, _):
         frame(b"K")
-        os._exit(130)
+        os._exit(128 + signum)
 
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, interrupted)
