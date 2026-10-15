@@ -25,18 +25,22 @@ SOFTWARE.
 Cinder Lite is a fork of Cinder (https://huggingface.co/SmallAICreator/cinder).
 The MIT license above applies to this repository's own source, except:
 
-  app/src/main/cpp/termux.c          Apache-2.0, from termux-app v0.118.0
+  android/app/src/main/cpp/termux.c  Apache-2.0, from termux-app v0.118.0
                                      (https://github.com/termux/termux-app),
                                      unmodified
-  gradlew, gradlew.bat,              Apache-2.0, the Gradle wrapper
-  gradle/wrapper/gradle-wrapper.jar  (https://gradle.org)
-  app/src/main/assets/proot,         third-party binaries under their own
+  android/gradlew, gradlew.bat,      Apache-2.0, the Gradle wrapper
+  android/gradle/wrapper/*.jar       (https://gradle.org)
+  android/app/src/main/assets/proot, third-party binaries under their own
   loader, libtalloc.so.2,            licenses (GPL-2.0, LGPL-3.0, BSD-3-Clause
   libandroid-shmem.so, rootfs.tgz    and the Alpine package licenses)
 
 Versions, licenses, source links and full license texts for everything bundled
-in the APK are in app/src/main/assets/licenses/ (THIRD-PARTY-NOTICES.md), which
-ships inside the APK.
+in the APK are in android/app/src/main/assets/licenses/ (THIRD-PARTY-NOTICES.md),
+which ships inside the APK.
+
+ios/ is not under this license: it is GPL-3.0 (ios/LICENSE), because the iOS app
+is built on iSH-AOK's GPL-3.0 emulator. Its third-party notices are in
+ios/CinderLite/Licenses/THIRD-PARTY-NOTICES.md, which ships inside the app.
 
 Claude Code is not bundled. It is downloaded at runtime and remains subject to
 Anthropic's terms: https://code.claude.com/docs/en/legal-and-compliance

@@ -8,7 +8,7 @@ Cinder Lite is by Matt Hahnfeld, a lighter-weight fork of
 [Cinder](https://huggingface.co/SmallAICreator/cinder) by SmallAICreator. Unofficial and
 unaffiliated with Anthropic; you sign in with your own Claude account. Sideload only.
 
-| | [Android](android/) | iOS (in progress) |
+| | [Android](android/) | [iOS](ios/) |
 |---|---|---|
 | Sandbox | Alpine under proot, native speed | Alpine in iSH-AOK's emulator (no JIT on iOS), slower |
 | Claude Code | Downloaded from npm on first launch once you agree to Anthropic's license, sha512-verified, self-updating | The same |
@@ -16,10 +16,10 @@ unaffiliated with Anthropic; you sign in with your own Claude account. Sideload 
 | Shell access to the phone | `rish` / `adb shell` through Shizuku | None (iOS has no equivalent) |
 | License | MIT | GPL-3.0 (iSH-AOK's emulator is GPL) |
 
-See [android/README.md](android/README.md) for details, installation and building. The iOS port
-is in progress and will land in `ios/`.
+See [android/README.md](android/README.md) and [ios/README.md](ios/README.md) for details,
+installation and building.
 
 ## License
 
-Everything outside `ios/` is MIT ([LICENSE](LICENSE)). The iOS port in `ios/` will be GPL-3.0,
+Everything outside `ios/` is MIT ([LICENSE](LICENSE)). `ios/` is GPL-3.0 ([ios/LICENSE](ios/LICENSE)),
 because it is built on [iSH-AOK](https://github.com/emkey1/ish-AOK).

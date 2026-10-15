@@ -29,6 +29,10 @@ targets:
       - path: CinderLite/Guest
         type: folder
         buildPhase: resources
+      # Licenses and notices, inside the app as the GPL asks (a folder: "Licenses" in the bundle).
+      - path: CinderLite/Licenses
+        type: folder
+        buildPhase: resources
       - path: ish-AOK/deps/libapps/hterm/dist/js/hterm_all.js
         buildPhase: resources
     preBuildScripts:
