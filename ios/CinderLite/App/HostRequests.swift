@@ -36,7 +36,6 @@ func take(_ file: URL) -> Data? {
 /// would ping after every reply. Nothing is posted while the app is on screen.
 final class Notifier {
     static let shared = Notifier()
-    var visible = true
     private var watcher: DirectoryWatcher?
     private var turnStarted = Date.distantFuture   // unknown start: never counts as long
 
@@ -72,7 +71,7 @@ final class Notifier {
             guard let text = event["message"] as? String, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
             message = text
         }
-        if visible { return }
+        if UIApplication.shared.applicationState == .active { return }   // on screen: Claude's own UI says it
         let content = UNMutableNotificationContent()
         content.title = "Claude Code"   // fixed: the sandbox writes these events, and could pose as another app
         content.body = String(message.prefix(200))

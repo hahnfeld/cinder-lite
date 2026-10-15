@@ -101,15 +101,17 @@ Lite in the background. So:
    runner in the iCTRL app. After each reboot, iCTRL mounts the developer disk image again before
    the runner can start.
 2. Turn on ⋮ → Keep running in background: Claude is in the background while it works.
-3. Ask Claude to do something on the phone. It runs `phone start`, then opens apps and works through
+3. Ask Claude to do something on the phone. It runs `phone start`; the first time, iCTRL asks
+   whether to allow "Cinder Lite": tap **Allow** within about a minute (once; again only if iCTRL
+   forgets the key, after 30 days unused or a reinstall). Then Claude opens apps and works through
    them with `phone ui` (the on-screen elements, numbered), `phone click N 'name'`,
    `phone type N 'name' 'text'`, `phone scroll`, `phone key back|enter|home`, and `phone shot` when
    it needs to see the screen. `phone help` lists everything.
 4. Don't use the phone while Claude does; come back to Cinder Lite to see how it went.
 
 `phone` talks to the runner on `127.0.0.1:8200` with iCTRL's protocol v1 (each request sealed and
-authenticated with a key from a one-time pairing, kept in `/root/.cinder/ictrl.json`, readable by
-root only).
+authenticated with the key from that pairing, kept in `/root/.cinder/ictrl.json`, readable by root
+only). Tested against iCTRL's runner (server 1.98.12) in the iOS Simulator.
 
 ### The trust model
 
