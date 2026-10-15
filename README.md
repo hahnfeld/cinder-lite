@@ -356,7 +356,10 @@ phone stop                   # close it, and the apps on it
 
 Each action (`open`, `click`, `type`, `scroll`, `tap`, `swipe`, `text`, `key`) waits for the screen to
 settle and then lists it the way `phone ui` does (when Accessibility is on, below), so every step
-shows Claude its result.
+shows Claude its result. `click` and `type` name their element, so their approval prompts say what Claude
+is acting on. An element that has changed since, or sits behind a dialog or popup, is refused and
+the current screen listed instead. Password fields are flagged and their text is never listed, and
+a very long screen is cut off with a note to scroll.
 
 `phone ui` reads the screen through Android's accessibility API, the same way a screen reader does,
 so Claude works from real buttons and text fields rather than guessing from pictures. For that, turn

@@ -232,7 +232,13 @@ object ShizukuBridge {
                 error("the user used the phone screen and has given it back; nothing was done. It may have changed")
             }
             val a11y = PhoneAccessibility.instance ?: return action(screen)
-            print(a11y.after(screen.displayId, quiet, longest) { action(screen) })
+            try {
+                print(a11y.after(screen.displayId, quiet, longest) { action(screen) })
+            } catch (e: Exception) {
+                // A refused or failed action shows the screen as it is now, to pick again from.
+                runCatching { print(a11y.ui(screen.displayId)) }
+                throw e
+            }
         }
         when (op.optString(0)) {
             "start" -> {
