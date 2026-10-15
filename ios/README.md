@@ -109,7 +109,8 @@ Lite in the background. So:
    them with `phone ui` (the on-screen elements, numbered), `phone click N 'name'`,
    `phone type N 'name' 'text'`, `phone scroll`, `phone key back|enter|home`, and `phone shot` when
    it needs to see the screen. `phone help` lists everything.
-4. Don't use the phone while Claude does; come back to Cinder Lite to see how it went.
+4. Don't use the phone while Claude does. When it's done, `phone stop` brings Cinder Lite back to
+   the front with its answer.
 
 `phone` talks to the runner on `127.0.0.1:8200` with iCTRL's protocol v1 (each request sealed and
 authenticated with the key from that pairing, kept in `/root/.cinder/ictrl.json`, readable by root

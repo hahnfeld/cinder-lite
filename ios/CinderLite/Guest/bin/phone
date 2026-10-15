@@ -29,7 +29,7 @@ import urllib.request
 
 USAGE = """\
 phone start                     check that iCTRL's runner is up (starting it if it isn't)
-phone stop                      go back to the home screen
+phone stop                      done: back to Cinder Lite
 phone ui                        list the on-screen elements, numbered, with text and bounds
 phone shot [file]               screenshot (default /tmp/phone.jpg); prints the path
 phone setup                     what to install on the iPhone for phone control
@@ -468,8 +468,14 @@ def main(argv):
                 os.remove("/tmp/phone.jpg")   # the last shot may show the user's apps
             except OSError:
                 pass
-            rpc("home")
-            print("back on the home screen")
+            # Back to Cinder Lite, where the user reads Claude's answer: on iOS the phone's one screen
+            # is left wherever Claude was (Android's phone screen is a separate one).
+            try:
+                rpc("activate_app", {"bundle_id": "app.cinderlite.ios"})
+                print("back in Cinder Lite")
+            except PhoneError:
+                rpc("home")
+                print("back on the home screen (open Cinder Lite to continue)")
         elif op == "ui":
             print(screen()[0], end="")
         elif op == "shot":
