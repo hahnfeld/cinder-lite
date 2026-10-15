@@ -59,13 +59,20 @@ final class Sandbox {
 
     /// Mounts the root and the host folders and starts init. Once per process.
     func boot() throws {
-        try CinderKernel.bootRoot(root.path, mounts: [
-            "/usr/local/bin": bin.path,
-            "/usr/local/libexec": libexec.path,
-            "/root/.cinder": requests.path,
-            "/usr/local/dl": downloads.path,
-            "/workspace": workspace.path,
-        ])
+        try CinderKernel.bootRoot(root.path, mounts: mounts.mapValues(\.path))
+    }
+
+    private var mounts: [String: URL] {
+        ["/usr/local/bin": bin, "/usr/local/libexec": libexec, "/root/.cinder": requests, "/usr/local/dl": downloads,
+         "/workspace": workspace]
+    }
+
+    /// The real file behind a path in the sandbox, through the same mounts as boot.
+    func hostFile(_ guest: String) -> URL {
+        for (path, dir) in mounts where guest == path || guest.hasPrefix(path + "/") {
+            return dir.appendingPathComponent(String(guest.dropFirst(path.count)))
+        }
+        return guestFile(guest)
     }
 
     /// Asks for a fresh install at the next launch: the kernel holds the root until the process ends.

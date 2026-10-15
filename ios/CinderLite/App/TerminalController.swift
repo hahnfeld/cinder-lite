@@ -103,6 +103,7 @@ final class TerminalController: UIViewController {
                         self.booted = true
                         self.status.text = nil
                         Notifier.shared.start()
+                        FileOpener.shared.start(presenter: self)
                         ClaudeInstaller.shared.start()
                         self.launch(.claude)
                         #if DEBUG

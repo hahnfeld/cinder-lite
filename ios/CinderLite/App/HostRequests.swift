@@ -1,4 +1,5 @@
 import CryptoKit
+import QuickLook
 import UIKit
 import UserNotifications
 
@@ -28,6 +29,46 @@ func take(_ file: URL) -> Data? {
     let fd = open(file.path, O_RDONLY | O_NOFOLLOW)
     if fd < 0 { return nil }
     return FileHandle(fileDescriptor: fd, closeOnDealloc: true).readDataToEndOfFile()
+}
+
+/// xdg-open on a file: /root/.cinder/open-request names it, and it opens in iOS's preview, whose share
+/// button hands it to the app the user picks. Never to an app chosen for them, since anything in the
+/// sandbox can call xdg-open; hidden files (logins, keys) aren't handed out.
+final class FileOpener: NSObject, QLPreviewControllerDataSource {
+    static let shared = FileOpener()
+    private var watcher: DirectoryWatcher?
+    private weak var presenter: UIViewController?
+    private var file: URL?
+
+    func start(presenter: UIViewController) {
+        guard watcher == nil else { return }
+        self.presenter = presenter
+        let request = Sandbox.shared.requests.appendingPathComponent("open-request")
+        watcher = DirectoryWatcher(Sandbox.shared.requests) { [weak self] in
+            guard FileManager.default.fileExists(atPath: request.path), let data = take(request),
+                  let guest = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            self?.open(guest)
+        }
+    }
+
+    private func open(_ guest: String) {
+        guard guest.hasPrefix("/"), !guest.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { return }
+        let file = Sandbox.shared.hostFile(guest).resolvingSymlinksInPath()
+        let fm = FileManager.default
+        let roots = [fm.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Cinder"), Sandbox.shared.workspace]
+        var isDir: ObjCBool = false
+        guard roots.contains(where: { file.path.hasPrefix($0.resolvingSymlinksInPath().path + "/") }),
+              fm.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue,
+              var top = presenter else { return }
+        while let shown = top.presentedViewController { top = shown }
+        self.file = file
+        let preview = QLPreviewController()
+        preview.dataSource = self
+        top.present(preview, animated: true)
+    }
+
+    func numberOfPreviewItems(in _: QLPreviewController) -> Int { file == nil ? 0 : 1 }
+    func previewController(_: QLPreviewController, previewItemAt _: Int) -> QLPreviewItem { file! as NSURL }
 }
 
 /// Claude Code's hooks (cinder-settings.json) write each event to /root/.cinder/notify-request.

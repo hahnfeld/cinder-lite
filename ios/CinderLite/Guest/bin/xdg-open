@@ -1,7 +1,20 @@
 #!/bin/sh
-# xdg-open <url>: opens a web page on the iPhone (Claude Code's /login). https only: anything in
-# the sandbox can call this, and other schemes reach other apps' deep links.
+# xdg-open <https link | file>: a link opens in the browser (Claude Code's /login); a file in iOS's
+# preview, where the user can share it to another app. https only: anything in the sandbox can call
+# this, and other schemes reach other apps' deep links. A file goes to the app through
+# /root/.cinder/open-request (FileOpener), written then renamed so it never reads half a request.
+
+fail() { echo "xdg-open: $*" >&2; exit 1; }
 case "$1" in
   https://*) printf '%s' "$1" > /dev/url ;;
-  *) echo "xdg-open: only https links open here" >&2; exit 1 ;;
+  *)
+    path=${1#file://}
+    [ "$path" = "$1" ] || path=$(printf '%b' "$(printf '%s' "$path" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')")
+    if [ ! -e "$path" ]; then
+      case "$1" in [a-zA-Z]*:*) fail "only https links and files open here" ;; esac
+      fail "no such file: $1"
+    fi
+    file=$(realpath -- "$path") && [ -f "$file" ] || fail "not a file: $1"
+    case "$file" in */.*) fail "hidden files (logins, keys, settings) don't open here" ;; esac
+    printf '%s\n' "$file" > /root/.cinder/open-request.tmp && mv /root/.cinder/open-request.tmp /root/.cinder/open-request ;;
 esac

@@ -80,6 +80,8 @@ the 32-bit proot loader.
   code, and never in the shell. Gboard's top strip and number row can be hidden in Gboard's own
   settings (Preferences → Suggestion strip, and Number row for passwords: the terminal counts as one).
 - `/login` opens the phone's default browser through an `xdg-open` shim limited to https links.
+  `xdg-open <file>` hands a file from the sandbox or `/sdcard` to the app you pick (browsers for
+  web pages), read-only; never hidden files (logins, keys) or APKs.
 - A bundled symbol font (a 70 KB subset of Noto Sans Symbols 2) for characters the system fonts
   lack, such as Claude Code's ⏵⏵ mode marker.
 - First-run setup that can't run twice at once, resumes after interruption, shows download and

@@ -66,6 +66,14 @@
                 android:resource="@xml/phone_accessibility" />
         </service>
 
+        <!-- Hands a sandbox file to the app the user picks (xdg-open on a file): read-only, and only
+             the file each grant names. -->
+        <provider
+            android:name=".SharedFiles"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <!-- Receives Shizuku's binder, for the optional adb-shell access (⋮ → Shizuku). -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

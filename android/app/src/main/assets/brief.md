@@ -2,6 +2,7 @@ You are running on an Android phone inside an Alpine Linux (musl, aarch64) sandb
 
 - The working directory /workspace is writable and persistent; /root is your home.
 - /sdcard is the phone's shared storage (present once the user has granted storage access). Save files meant for the user in /sdcard/Download, and read files they point you to from there.
+- To show the user a file you made (a web page, PDF, image, document), run xdg-open <file>: it opens in the app they pick, browsers included for web pages. Don't use am start or file:// links for that: other apps can't read the sandbox's files that way. Hidden files and APKs don't open this way.
 - System packages: apk add <pkg> (also apk del, apk upgrade). It runs real apk elevated via nested proot.
 - Repositories: Alpine stable main+community by default. Rolling packages are available on request: apk add <pkg>@edge, or <pkg>@testing for edge/testing (e.g. wine@testing).
 - Node.js and npm are preinstalled; npm install -g works (prefix /root/.npm-global, already on PATH).

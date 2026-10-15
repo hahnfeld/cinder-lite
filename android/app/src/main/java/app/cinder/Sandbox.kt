@@ -72,6 +72,14 @@ class Sandbox(private val ctx: Context) {
     val androidLibexec = File(root, "lx")
     val shims = File(rootfs, "usr/local/shims")                  // agent-facing wrappers, first on PATH
 
+    /** The real file behind a path in the sandbox, through the same binds as the proot command line. */
+    fun hostFile(guest: String): File {
+        val binds = listOf("/workspace" to workspace, "/root" to home, "/tmp" to tmp, "/usr/local/bin" to bin,
+            "/usr/local/libexec" to libexec, "/sdcard" to Environment.getExternalStorageDirectory())
+        for ((path, dir) in binds) if (guest == path || guest.startsWith("$path/")) return File(dir, guest.removePrefix(path))
+        return File(rootfs, guest)
+    }
+
     fun ensureLayout() {
         listOf(home, workspace, bin, lib, libexec, rootfs, tmp).forEach { it.mkdirs() }
     }

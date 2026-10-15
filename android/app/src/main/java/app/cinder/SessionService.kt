@@ -10,8 +10,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.FileObserver
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.widget.Toast
 import org.json.JSONObject
 import java.io.File
 import java.nio.file.Files
@@ -31,7 +34,7 @@ import kotlin.concurrent.thread
  * bounded, and renewed each time a session (re)starts.
  *
  * It also handles the requests the sandbox's helper scripts leave in home/.cinder while sessions
- * run: xdg-open's URLs (OAuth login), termux-install's ask for the full set of Android libraries,
+ * run: xdg-open's URLs (OAuth login) and files, termux-install's ask for the full set of Android libraries,
  * and Claude Code's own notifications (from the hooks in assets/claude-settings.json), which become phone
  * notifications while the app isn't on screen. One watcher for all three: Android delivers a
  * directory's events to only one FileObserver per process.
@@ -48,7 +51,7 @@ class SessionService : Service() {
         watcher = object : FileObserver(dir, MOVED_TO or CLOSE_WRITE) {
             override fun onEvent(event: Int, path: String?) {
                 when (path) {
-                    "open-request" -> openUrl(take(File(dir, path)).trim())
+                    "open-request" -> take(File(dir, path)).trim().let { if (it.startsWith("/")) openFile(it) else openUrl(it) }
                     "notify-request" -> runCatching { JSONObject(take(File(dir, path))) }.getOrNull()?.let(::onHook)
                     "stage-request" -> {
                         File(dir, path).delete()
@@ -83,6 +86,28 @@ class SessionService : Service() {
         packageManager.resolveActivity(Intent(view).setData(Uri.parse("https://example.com")), PackageManager.MATCH_DEFAULT_ONLY)
             ?.activityInfo?.packageName?.takeIf { it != "android" }?.let(view::setPackage)
         runCatching { startActivity(view) }
+    }
+
+    /**
+     * A sandbox file, in the app the user picks: never one chosen for them, since anything in the
+     * sandbox can call xdg-open. Hidden files (logins, keys) and APKs (installing is the user's
+     * call, from their Download folder) aren't handed out.
+     */
+    private fun openFile(guest: String) {
+        if (guest.split('/').any { it.startsWith(".") } || guest.endsWith(".apk", ignoreCase = true)) return
+        val file = Sandbox(applicationContext).hostFile(guest)
+        if (!SharedFiles.shareable(this, file)) return
+        val type = SharedFiles.type(file)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(SharedFiles.uri(this, file), type)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        // Text no app claims by its own type (Markdown, say) still opens as plain text, in the browser at least.
+        if (type.startsWith("text/") && packageManager.queryIntentActivities(view, 0).isEmpty()) view.setDataAndType(view.data, "text/plain")
+        // With no app for it, Android's chooser shows nothing at all: say so instead.
+        if (packageManager.queryIntentActivities(view, 0).isEmpty()) {
+            Handler(Looper.getMainLooper()).post { Toast.makeText(this, "No app on this phone opens ${file.name}", Toast.LENGTH_LONG).show() }
+            return
+        }
+        runCatching { startActivity(Intent.createChooser(view, "Open ${file.name} with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
