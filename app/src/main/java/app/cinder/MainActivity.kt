@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.fonts.Font
+import android.graphics.fonts.FontFamily
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -34,6 +36,7 @@ import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -66,7 +69,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         terminal = TerminalView(this, null).apply {
             setTerminalViewClient(this@MainActivity)
             setTextSize(fontSize)
-            setTypeface(Typeface.MONOSPACE)
+            setTypeface(terminalTypeface())
             isFocusable = true
             isFocusableInTouchMode = true
         }
@@ -330,6 +333,19 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         // is ready for the keyboard, as it can at launch. This waits until it is.
         window.insetsController?.show(WindowInsets.Type.ime())
     }
+
+    /**
+     * Android's monospace font, then symbols no system font has (Claude Code's ⏵⏵ mode marker among
+     * them) from a 70 KB cut of Noto Sans Symbols 2, then the system's usual fallbacks (emoji, CJK…).
+     * Plain monospace if the system font isn't at AOSP's path.
+     */
+    private fun terminalTypeface(): Typeface = runCatching {
+        fun family(font: Font) = FontFamily.Builder(font).build()
+        Typeface.CustomFallbackBuilder(family(Font.Builder(File("/system/fonts/DroidSansMono.ttf")).build()))
+            .addCustomFallback(family(Font.Builder(assets, "fonts/symbols.ttf").build()))
+            .setSystemFallback("monospace")
+            .build()
+    }.getOrDefault(Typeface.MONOSPACE)
 
     private fun sp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics).toInt()
 

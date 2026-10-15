@@ -60,7 +60,7 @@ android {
     // Assets are binaries and an already-gzipped tarball. Leaving aapt to compress them makes
     // AssetManager refuse to stream anything over ~1 MB, which is what broke the rootfs unpack.
     androidResources {
-        noCompress += listOf("tgz", "so", "2", "loader", "proot")
+        noCompress += listOf("tgz", "so", "2", "loader", "proot", "ttf")   // ttf: Font.Builder maps it in place
     }
 
     // libtermux, built from source so it's 16 KB page-aligned (see src/main/cpp/CMakeLists.txt).
