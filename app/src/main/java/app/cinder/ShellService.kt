@@ -5,6 +5,8 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.hardware.input.InputManager
 import android.os.Build
+import android.os.Binder
+import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.util.Log
@@ -29,6 +31,17 @@ import kotlin.system.exitProcess
 class ShellService(private val context: Context?) : IShellService.Stub() {
 
     constructor() : this(null)
+
+    /**
+     * Only Cinder Lite (and Shizuku itself, which runs as the shell or root) may call in. Shizuku
+     * hands this binder to Cinder Lite alone; this holds even if it ever leaked.
+     */
+    override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+        val caller = Binder.getCallingUid()
+        val app = context?.applicationInfo?.uid ?: caller   // an old Shizuku gives no context to check against
+        if (caller != app && caller != android.os.Process.myUid() && caller != 0) return false
+        return super.onTransact(code, data, reply, flags)
+    }
 
     private class Job(val process: Process, val output: List<Thread>) {
         /** The shell's pid, which `setsid` makes its process group's id too (0 if unreadable). */
@@ -120,7 +133,8 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
         }
     }
 
-    override fun inject(displayId: Int, event: InputEvent) = runCatching { injector(event, displayId) }
+    // Only into a phone screen this service made, never the user's own display.
+    override fun inject(displayId: Int, event: InputEvent) = displays.containsKey(displayId) && runCatching { injector(event, displayId) }
         .onFailure { if (!injectFailed) { injectFailed = true; Log.w("cinder-rish", "can't inject input", it) } }
         .getOrDefault(false)
     @Volatile private var injectFailed = false   // logged once: the user's touches would repeat it

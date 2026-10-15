@@ -18,6 +18,7 @@ set -e
 API=35
 SDK=${ANDROID_HOME:-/root/android-sdk}
 PLATFORM_URL=https://dl.google.com/android/repository/platform-35_r02.zip
+PLATFORM_SHA256=0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0   # Google publishes its sha1
 
 echo "==> JDK 17 (Alpine)"
 command -v javac >/dev/null 2>&1 || apk add openjdk17-jdk || { echo "! could not install openjdk17-jdk"; exit 1; }
@@ -32,6 +33,8 @@ echo "==> android.jar for API $API (from Google)"
 if [ ! -f "$SDK/platforms/android-$API/android.jar" ]; then
   command -v unzip >/dev/null 2>&1 || apk add unzip >/dev/null || { echo "! could not install unzip (apk add unzip)"; exit 1; }
   wget -O /tmp/platform.zip "$PLATFORM_URL"   # ~60 MB: show progress
+  [ "$(sha256sum /tmp/platform.zip | cut -d' ' -f1)" = "$PLATFORM_SHA256" ] || {
+    rm -f /tmp/platform.zip; echo "! platform download failed its checksum"; exit 1; }
   rm -rf /tmp/platform-x && mkdir -p /tmp/platform-x
   unzip -q /tmp/platform.zip -d /tmp/platform-x
   src=$(find /tmp/platform-x -name android.jar | head -1)

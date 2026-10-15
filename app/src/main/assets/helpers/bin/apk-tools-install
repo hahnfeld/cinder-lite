@@ -10,20 +10,23 @@ if ! java -version >/dev/null 2>&1; then
   apk add openjdk17-jre-headless
 fi
 
-fetch() {  # url, destination
+fetch() {  # url, destination, sha256 (pinned: what the release publishes for this version)
   [ -f "$2" ] && { echo "  have $(basename "$2")"; return 0; }
   echo "  fetching $(basename "$2")"
-  wget -q -O "$2" "$1" || { echo "  ! download failed"; rm -f "$2"; return 1; }
+  wget -q -O "$2.part" "$1" || { echo "  ! download failed"; rm -f "$2.part"; return 1; }
+  [ "$(sha256sum "$2.part" | cut -d' ' -f1)" = "$3" ] || { echo "  ! checksum mismatch, not installed"; rm -f "$2.part"; return 1; }
+  mv "$2.part" "$2"
 }
 
 echo "==> apktool"
 fetch "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar" \
-      "$LIB/apktool.jar" || true
+      "$LIB/apktool.jar" dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423 || true
 
 echo "==> jadx"
 if [ ! -x /usr/local/jadx/bin/jadx ]; then
   command -v unzip >/dev/null 2>&1 || apk add unzip >/dev/null || { echo "! could not install unzip (apk add unzip)"; exit 1; }
-  if fetch "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip" /tmp/jadx.zip; then
+  if fetch "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip" /tmp/jadx.zip \
+        545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974; then
     mkdir -p /usr/local/jadx && unzip -qo /tmp/jadx.zip -d /usr/local/jadx && rm -f /tmp/jadx.zip
     chmod +x /usr/local/jadx/bin/* 2>/dev/null || true
   fi

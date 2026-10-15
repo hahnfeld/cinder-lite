@@ -12,7 +12,7 @@
 set -e
 REPO=https://packages.termux.dev/apt/termux-main
 IDX=/tmp/termux-index
-MAP=/tmp/termux-map
+MAP=/tmp/termux-map2   # package, file, sha256 ("2": older maps had no checksums)
 DEP=/tmp/termux-dep
 PREFIX=/data/data/com.termux/files/usr
 
@@ -32,7 +32,8 @@ if [ ! -s "$MAP" ]; then
   wget -O "$IDX" "$REPO/dists/stable/main/binary-aarch64/Packages"   # several MB: show progress
   awk '
     /^Package: / {p=$2}
-    /^Filename: / {print p "\t" $2 > "'"$MAP"'"}
+    /^Filename: / {f=$2}
+    /^SHA256: / {print p "\t" f "\t" $2 > "'"$MAP"'"}
     /^Depends: / {d=$0; sub(/^Depends: /,"",d); gsub(/\([^)]*\)/,"",d); gsub(/,/," ",d);
                   print p "\t" d > "'"$DEP"'"}
   ' "$IDX"
@@ -63,9 +64,14 @@ mkdir -p "$PREFIX/bin" "$PREFIX/lib" "$PREFIX/tmp"
 if [ -n "$NODEPS" ]; then echo "installing $(wc -l < "$WANT") package(s), no dependencies..."; else echo "installing $(wc -l < "$WANT") package(s) with all dependencies..."; fi
 while IFS= read -r p; do
   file=$(grep -m1 "^$p	" "$MAP" | cut -f2)
+  sum=$(grep -m1 "^$p	" "$MAP" | cut -f3)
   [ -n "$file" ] || continue    # virtual/provided names have no .deb
   if ! wget -qO /tmp/t.deb "$REPO/$file" 2>/tmp/werr; then
     echo "  ! $p (download failed: $(head -1 /tmp/werr 2>/dev/null))"
+  # The index (fetched over HTTPS) gives each package's SHA-256; a file that doesn't match it is
+  # never extracted.
+  elif [ "$(sha256sum /tmp/t.deb | cut -d' ' -f1)" != "$sum" ]; then
+    echo "  ! $p (checksum mismatch, not installed)"
   # dpkg-deb -x shells out to `tar --warning=...`, a GNU flag BusyBox tar (Alpine's
   # default) rejects. --fsys-tarfile instead streams the decompressed data tarball to
   # stdout (using its own xz/zst handling, no tar), which we extract with a plain BusyBox

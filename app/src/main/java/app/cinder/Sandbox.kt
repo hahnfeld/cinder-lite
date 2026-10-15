@@ -282,6 +282,10 @@ class Sandbox(private val ctx: Context) {
      * run that way: it refuses to skip permission checks while it thinks it is root, and exits 1.
      */
     fun prootCommand(inner: String, asRoot: Boolean = false): Array<String> {
+        // proot, its pieces and the helpers are writable from inside (they're bound in), so each
+        // session starts from the APK's copies: nothing the sandbox runs can make a lasting change.
+        installRuntime()
+        writeHelpers()
         val proot = File(bin, "proot").takeIf { it.canExecute() }?.absolutePath ?: error("proot is not installed")
         ensureMountPoints()
         configureNetwork()

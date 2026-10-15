@@ -397,10 +397,17 @@ Limits:
 
 While it's on, everything in the sandbox has adb-shell power, Claude included. That means it can
 uninstall apps, change settings, grant permissions and tap the screen, and use apps on the phone
-screen, where you're signed in to them. Claude Code's permission
-prompts still apply to its commands, so review `rish` and `adb shell` calls as you would any other
-command. Turn it off when you don't need it: ⋮ → **Shizuku** again, or revoke Cinder Lite in the
-Shizuku app.
+screen, where you're signed in to them. Claude Code's permission prompts still apply to its own
+commands, so review `rish`, `adb shell` and `phone` calls as you would any other command. But
+they don't cover what those commands run in turn: a package's install script or a cloned
+project's build gets the same power. Claude is told to treat what it reads on screen, on the web
+and in files as data rather than instructions, and to check with you before sending, paying,
+installing or changing security settings; that's guidance, not a guarantee against a page or app
+built to mislead it.
+
+Turn it off when you don't need it: ⋮ → **Shizuku** again. Code in the sandbox runs as the app
+itself, so it could turn that switch back on; revoking Cinder Lite in the Shizuku app is the off
+switch nothing inside can undo.
 
 <br>
 

@@ -26,6 +26,7 @@ case $1 in
   shot)
     file=${2:-/tmp/phone.png}
     rish --phone shot > "$file.part" && mv "$file.part" "$file" && echo "$file" || { rm -f "$file.part"; exit 1; } ;;
+  stop) rish --phone stop; r=$?; rm -f /tmp/phone.png; exit $r ;;   # the last shot may show the user's apps
   ""|help|-h|--help) usage ;;
   *) exec rish --phone "$@" ;;
 esac

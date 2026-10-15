@@ -6,7 +6,7 @@ Cinder Lite relays it to the Shizuku app (turn it on in the app's ⋮ menu → S
   rish -c 'command'     run one command
   rish command args...  the same, joined with spaces
 """
-import json, os, signal, socket, sys, threading
+import json, os, signal, socket, struct, sys, threading
 
 
 def main():
@@ -28,9 +28,15 @@ def main():
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock.connect("\0cinder-rish")
+        sock.connect("/tmp/rish.sock")
     except OSError:
         sys.stderr.write(me + ": Shizuku support is off. Turn it on in Cinder Lite: ⋮ → Shizuku\n")
+        return 1
+    # Only Cinder Lite itself (the same uid as this sandbox) may answer: it receives the command and
+    # our output streams. Under sudo's fake root our own uid reads as 0, so there's nothing to compare.
+    server_uid = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+    if os.getuid() != 0 and server_uid != os.getuid():
+        sys.stderr.write(me + ": refusing a socket that isn't Cinder Lite's\n")
         return 1
 
     lock = threading.Lock()

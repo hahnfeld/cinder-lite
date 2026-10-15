@@ -35,8 +35,9 @@ import kotlin.concurrent.thread
  * Optional adb-shell access for the sandbox through the Shizuku app (⋮ → Shizuku, off by default).
  *
  * The sandbox's `rish` can't use Shizuku itself: Shizuku's own client runs Android's Java runtime,
- * which can't start inside proot. So `rish` connects here, over the abstract socket "cinder-rish",
- * and this relays the command to [ShellService], which Shizuku runs with adb-shell privileges.
+ * which can't start inside proot. So `rish` connects here, over a socket in the sandbox's /tmp, and
+ * this relays the command to [ShellService], which Shizuku runs with adb-shell privileges. The socket
+ * lives in app-private storage, so no other app can reach it or put one of its own in its place.
  *
  * Protocol: the client sends one JSON line {"cmd", "interactive"} with its stdout and stderr fds
  * attached (SCM_RIGHTS), then frames — 'D' + length + stdin bytes, 'E' (stdin ended), 'K' (killed).
@@ -55,6 +56,7 @@ object ShizukuBridge {
         "Until then use phone shot and phone tap."
 
     @Volatile private var server: LocalServerSocket? = null
+    private var listening: LocalSocket? = null   // the bound socket [server] listens on
     @Volatile private var service: IShellService? = null
     private var connection: ServiceConnection? = null
     private val binding = Any()   // one connect() at a time (not this object's lock: start/stop run on main)
@@ -94,8 +96,13 @@ object ShizukuBridge {
     fun start(ctx: Context) {
         if (server != null || !isEnabled(ctx)) return
         val app = ctx.applicationContext
-        val socket = runCatching { LocalServerSocket(TAG) }
-            .getOrElse { Log.e(TAG, "can't listen", it); return }
+        val path = socketFile(app).apply { parentFile?.mkdirs(); delete() }
+        val bound = LocalSocket(LocalSocket.SOCKET_STREAM)
+        val socket = runCatching {
+            bound.bind(LocalSocketAddress(path.path, LocalSocketAddress.Namespace.FILESYSTEM))
+            LocalServerSocket(bound.fileDescriptor)
+        }.getOrElse { Log.e(TAG, "can't listen", it); runCatching { bound.close() }; return }
+        listening = bound
         server = socket
         thread(name = "rish-accept") {
             while (server === socket) {
@@ -109,11 +116,18 @@ object ShizukuBridge {
     @Synchronized
     fun stop(ctx: Context) {
         PhoneScreenActivity.current?.close()
-        val socket = server ?: return
-        server = null
-        // accept() doesn't notice close(); a throwaway connection wakes it so its thread can exit.
-        runCatching { LocalSocket().use { it.connect(LocalSocketAddress(TAG)) } }
-        runCatching { socket.close() }
+        server?.let { socket ->
+            server = null
+            // accept() doesn't notice close(); a throwaway connection wakes it so its thread can exit.
+            val path = socketFile(ctx).path
+            runCatching { LocalSocket().use { it.connect(LocalSocketAddress(path, LocalSocketAddress.Namespace.FILESYSTEM)) } }
+            runCatching { socket.close() }
+            runCatching { listening?.close() }
+            listening = null
+            socketFile(ctx).delete()
+        }
+        // Unbound even when the socket was already gone: a phone action that waited out the toggle
+        // must not leave a service behind.
         connection?.let { conn -> runCatching { Shizuku.unbindUserService(serviceArgs(ctx), conn, true) } }
         connection = null
         service = null
@@ -122,8 +136,8 @@ object ShizukuBridge {
     private fun serve(ctx: Context, client: LocalSocket) {
         var fds: Array<FileDescriptor>? = null
         try {
-            // Abstract sockets are reachable by every app on the device; only our own sandbox (same
-            // uid) may run commands with adb-shell privileges.
+            // Only our own sandbox (same uid) may run commands with adb-shell privileges. The socket's
+            // directory already keeps other apps out; this holds even if that ever changes.
             if (client.peerCredentials.uid != Process.myUid()) return
             val input = DataInputStream(client.inputStream)
             val header = JSONObject(readLine(input))
@@ -171,7 +185,7 @@ object ShizukuBridge {
                 while (running) {
                     // Every frame is a type byte, a 4-byte length (0 for E and K), then that many bytes.
                     val kind = input.readByte().toInt().toChar()
-                    val data = ByteArray(input.readInt()).also { input.readFully(it) }
+                    val data = ByteArray(input.readInt().also { require(it in 0..(1 shl 20)) }).also { input.readFully(it) }
                     when (kind) {
                         'D' -> sink.write(data)
                         'E' -> { runCatching { stdin[1].close() }; running = false }
@@ -257,6 +271,11 @@ object ShizukuBridge {
         }
     }
 
+    /** The socket `rish` connects to: the sandbox's /tmp/rish.sock. */
+    private fun socketFile(ctx: Context) = File(ctx.filesDir, "tmp/rish.sock")
+
+    private val COMPONENT = Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+")
+
     /** A failure for the client to show. Shizuku dying mid-call has no message of its own. */
     private fun why(e: Exception) = if (e is RemoteException) "lost the Shizuku service" else e.message ?: e.toString()
 
@@ -275,7 +294,9 @@ object ShizukuBridge {
      * package is visible to this app because it targets SDK 28, before package visibility filtering.
      */
     private fun open(ctx: Context, displayId: Int, pkg: String) {
+        // The component goes into a shell command, and an app's manifest names its own activities.
         val component = ctx.packageManager.getLaunchIntentForPackage(pkg)?.component?.flattenToShortString()
+            ?.takeIf(COMPONENT::matches)
             ?: error("no app to open for '$pkg' (list packages with: rish -c 'pm list packages')")
         val output = sh(ctx, "am start --display $displayId -n '$component'")
         check(output.lines().none { it.startsWith("Error") }) { output.trim() }
@@ -309,6 +330,7 @@ object ShizukuBridge {
     /** The bound [ShellService], binding it (and asking for Shizuku permission) if needed. */
     private fun connect(ctx: Context): IShellService {
         synchronized(binding) {
+            check(server != null) { "Shizuku support is off. Turn it on in Cinder Lite: ⋮ → Shizuku" }
             // Shizuku hands its connection to an app when the app comes to the front, so after Shizuku
             // starts, Cinder Lite picks it up once the user switches away and back.
             if (!isRunning()) error("Shizuku isn't running. Start it in the Shizuku app. If it's already running, " +

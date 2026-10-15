@@ -7,12 +7,15 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.FileObserver
 import android.os.IBinder
 import android.os.PowerManager
 import org.json.JSONObject
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import kotlin.concurrent.thread
 
 /**
@@ -60,15 +63,26 @@ class SessionService : Service() {
         ShizukuBridge.start(this)   // no-op unless turned on in ⋮ → Shizuku
     }
 
-    /** Reads a request file and removes it. */
-    private fun take(file: File) = runCatching { file.readText() }.getOrDefault("").also { file.delete() }
+    /**
+     * Reads a request file and removes it. Anything in the sandbox can write these, so only a small
+     * regular file is read: not a link (to /dev/zero, say), a pipe that would block, or a huge file.
+     */
+    private fun take(file: File) = runCatching {
+        val path = file.toPath()
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > 1 shl 16) ""
+        else Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { String(it.readBytes()) }
+    }.getOrDefault("").also { file.delete() }
 
-    /** Only web pages: anything in the sandbox can call xdg-open, and other schemes reach payment,
-     *  SMS and other apps' deep links. */
+    /** Only web pages, in a browser: anything in the sandbox can call xdg-open, and other schemes
+     *  (or an https link another app claims) reach payment, SMS and other apps' deep links. */
     private fun openUrl(url: String) {
         val uri = Uri.parse(url)
-        if (uri.scheme != "https" && uri.scheme != "http") return
-        runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        if (uri.scheme != "https") return
+        val view = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // The default browser, by package: a bare https intent goes to whichever app claims the link.
+        packageManager.resolveActivity(Intent(view).setData(Uri.parse("https://example.com")), PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName?.takeIf { it != "android" }?.let(view::setPackage)
+        runCatching { startActivity(view) }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -124,8 +138,8 @@ class SessionService : Service() {
         )
         nm.notify(
             ALERT_ID, Notification.Builder(this, ALERT_CHANNEL)
-                .setContentTitle(event.optString("title").ifBlank { "Claude Code" })
-                .setContentText(message)
+                .setContentTitle("Claude Code")   // fixed: the sandbox writes these events, and could pose as another app
+                .setContentText(message.take(200))
                 .setSmallIcon(android.R.drawable.stat_notify_chat)
                 .setContentIntent(openApp())
                 .setAutoCancel(true)
