@@ -345,8 +345,8 @@ the Android version"* and Claude uses the `phone` command:
 phone start                  # open the phone screen (the PiP window)
 phone open com.android.settings
 phone ui                     # the on-screen elements, numbered, with text and bounds
-phone click 15               # click element 15
-phone type 9 'wifi'          # put text into field 9 (no keyboard involved)
+phone click 15 'About phone' # click element 15, named as phone ui lists it
+phone type 9 'Search' 'wifi' # put text into field 9 (no keyboard involved)
 phone scroll 10 down
 phone shot                   # screenshot to /tmp/phone.png, for when the list isn't enough
 phone tap 300 147            # …and coordinates in that screenshot's pixels

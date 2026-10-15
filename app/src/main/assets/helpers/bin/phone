@@ -12,8 +12,8 @@ phone shot [file]               screenshot (default /tmp/phone.png); prints the 
 phone setup                     open Android's Accessibility settings to allow ui and the element actions
 Actions, which then list the screen they lead to (as phone ui does, when Accessibility is on):
 phone open <package>            launch an app on it
-phone click N                   click element N
-phone type N 'text'             replace the text in field N
+phone click N 'name'            click element N; name it as phone ui does (part is enough)
+phone type N 'name' 'text'      replace the text in field N
 phone scroll N up|down|left|right
 phone tap X Y                   tap at display pixels
 phone swipe X1 Y1 X2 Y2 [ms]

@@ -255,8 +255,11 @@ object ShizukuBridge {
                     "Android says it's a restricted setting: App info → ⋮ → Allow restricted settings, then try again.\n")
             }
             "ui" -> { val id = screen().displayId; print(a11y().ui(id)) }
-            "click" -> { val n = number(1).toInt(); act { a11y().click(n) } }
-            "type" -> { val n = number(1).toInt(); val text = op.optString(2); act { a11y().type(n, text) } }
+            "click" -> { val n = number(1).toInt(); val named = arg(2); act { a11y().click(n, named) } }
+            "type" -> {
+                val n = number(1).toInt(); val named = arg(2); val text = op.optString(3)
+                act { a11y().type(n, named, text) }
+            }
             "scroll" -> { val n = number(1).toInt(); val direction = arg(2); act { a11y().scroll(n, direction) } }
             "tap" -> { val x = number(1); val y = number(2); act { it.tap(x, y) } }
             "swipe" -> {

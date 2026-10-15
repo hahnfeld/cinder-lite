@@ -88,8 +88,7 @@ class PhoneAccessibility : AccessibilityService() {
         val out = StringBuilder()
         fun visit(node: AccessibilityNodeInfo, depth: Int) {
             if (!node.isVisibleToUser) return
-            val label = listOfNotNull(node.text, node.contentDescription, node.hintText)
-                .map(::clean).filter { it.isNotEmpty() }.distinct().joinToString(" | ")
+            val label = label(node)
             val flags = buildList {
                 if (node.isClickable) add("click")
                 if (node.isLongClickable) add("long")
@@ -106,8 +105,7 @@ class PhoneAccessibility : AccessibilityService() {
                 childDepth++
                 val r = Rect().also(node::getBoundsInScreen)
                 out.append("  ".repeat(depth)).append("[${found.size}] ").append(clean(node.className).substringAfterLast('.'))
-                if (label.isNotEmpty()) out.append(" \"").append(label).append('"')
-                else node.viewIdResourceName?.let { out.append(" #").append(clean(it.substringAfter(":id/"))) }
+                name(node).takeIf { it.isNotEmpty() }?.let { out.append(if (label.isNotEmpty()) " \"$it\"" else " $it") }
                 out.append(" (${r.left},${r.top},${r.right},${r.bottom})")
                 if (flags.isNotEmpty()) out.append(' ').append(flags.joinToString(" "))
                 out.append('\n')
@@ -132,9 +130,17 @@ class PhoneAccessibility : AccessibilityService() {
     private fun clean(text: CharSequence?) =
         text?.toString().orEmpty().replace(CONTROL, " ").replace('"', '\'').trim().take(120)
 
+    /** An element's text, description and hint, as [ui] lists them. */
+    private fun label(node: AccessibilityNodeInfo) = listOfNotNull(node.text, node.contentDescription, node.hintText)
+        .map(::clean).filter { it.isNotEmpty() }.distinct().joinToString(" | ")
+
+    /** What [ui] calls an element: its label, else its view id as "#id" (empty if neither). */
+    private fun name(node: AccessibilityNodeInfo) =
+        label(node).ifEmpty { node.viewIdResourceName?.let { "#" + clean(it.substringAfter(":id/")) }.orEmpty() }
+
     /** Clicks element [n], or the nearest clickable element around it (a row around its label). */
-    fun click(n: Int) {
-        var node: AccessibilityNodeInfo? = node(n)
+    fun click(n: Int, named: String) {
+        var node: AccessibilityNodeInfo? = node(n, named)
         while (node != null && !node.isClickable) node = node.parent
         if (node?.performAction(AccessibilityNodeInfo.ACTION_CLICK) != true) {
             val r = Rect().also(node(n)::getBoundsInScreen)
@@ -143,9 +149,9 @@ class PhoneAccessibility : AccessibilityService() {
     }
 
     /** Replaces the text of field [n] directly, without a keyboard. */
-    fun type(n: Int, text: String) {
+    fun type(n: Int, named: String, text: String) {
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        check(node(n).performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+        check(node(n, named).performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
             "element $n isn't a text field. Click it, then try: phone text '…'"
         }
     }
@@ -171,6 +177,22 @@ class PhoneAccessibility : AccessibilityService() {
     private fun node(n: Int): AccessibilityNodeInfo {
         val node = nodes.getOrNull(n - 1) ?: error("no element $n. Run phone ui first")
         check(node.refresh()) { "element $n is gone; the screen has changed. Run phone ui again" }
+        return node
+    }
+
+    /**
+     * Element [n], if it's still the one Claude [named]: part of its name as [ui] listed it (the whole
+     * name when that's shorter than 3 characters). The name makes each click or field readable in
+     * Claude's approval prompts, and an element that has changed since is refused, not acted on.
+     */
+    private fun node(n: Int, named: String): AccessibilityNodeInfo {
+        val node = node(n)
+        val name = name(node)
+        val wanted = named.trim()
+        check(name.isNotEmpty()) { val r = Rect().also(node::getBoundsInScreen); "element $n has no name; use phone tap ${r.centerX()} ${r.centerY()}" }
+        check(name.contains(wanted, ignoreCase = true) && (wanted.length >= 3 || wanted.equals(name, ignoreCase = true))) {
+            "element $n is \"$name\", not \"$named\": the screen may have changed. Run phone ui again"
+        }
         return node
     }
 
