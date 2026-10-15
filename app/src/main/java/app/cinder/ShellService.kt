@@ -9,8 +9,8 @@ import android.os.Binder
 import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.system.Os
-import android.util.Log
 import android.system.OsConstants
+import android.util.Log
 import android.view.InputEvent
 import android.view.Surface
 import java.io.InputStream
@@ -134,10 +134,11 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
     }
 
     // Only into a phone screen this service made, never the user's own display.
-    override fun inject(displayId: Int, event: InputEvent) = displays.containsKey(displayId) && runCatching { injector(event, displayId) }
-        .onFailure { if (!injectFailed) { injectFailed = true; Log.w("cinder-rish", "can't inject input", it) } }
-        .getOrDefault(false)
     @Volatile private var injectFailed = false   // logged once: the user's touches would repeat it
+
+    override fun inject(displayId: Int, event: InputEvent) = displays.containsKey(displayId) && runCatching { injector(event, displayId) }
+        .onFailure { if (!injectFailed) { injectFailed = true; Log.w(TAG, "can't inject input", it) } }
+        .getOrDefault(false)
 
     @Synchronized
     override fun releaseDisplay(displayId: Int) {
@@ -152,7 +153,7 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
      */
     private fun closeApps(displayId: Int) {
         runCatching {
-            val script = "for id in \$(am stack list | sed -n 's/^RootTask id=\\([0-9]*\\) .* displayId=$displayId .*/\\1/p'); " +
+            val script = "for id in \$(am stack list | sed -n 's/^[A-Za-z]* id=\\([0-9]*\\) .* displayId=$displayId .*/\\1/p'); " +
                 "do am stack remove \$id; done"
             ProcessBuilder("/system/bin/sh", "-c", script).redirectErrorStream(true).start()
                 .apply { inputStream.readBytes(); waitFor() }
@@ -163,9 +164,10 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
      * scrcpy's --new-display flags (most are hidden, so they're written as numbers), with these
      * changes: no system decorations (a home screen and taskbar Claude doesn't need); no display group
      * of its own (OWN_DISPLAY_GROUP, ALWAYS_UNLOCKED, DEVICE_DISPLAY_GROUP), so the phone screen sleeps
-     * and wakes with the phone's own instead of on its own timer; and STEAL_TOP_FOCUS_DISABLED. That
-     * makes a trusted display with its own focus, so it never takes focus or input from the user's
-     * screen, and closing it closes its apps rather than moving them onto the user's screen.
+     * and wakes with the phone's own instead of on its own timer; and STEAL_TOP_FOCUS_DISABLED added.
+     * On Android 14+ that makes a trusted display with its own focus that never takes focus or input
+     * from the user's screen. On any version, closing it closes its apps rather than moving them onto
+     * the user's screen.
      */
     private fun displayFlags(): Int {
         var flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
@@ -203,5 +205,9 @@ class ShellService(private val context: Context?) : IShellService.Stub() {
                 }
             }
         }
+    }
+
+    private companion object {
+        const val TAG = "cinder-rish"
     }
 }

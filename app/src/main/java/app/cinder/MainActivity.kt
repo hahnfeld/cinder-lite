@@ -64,7 +64,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         ui = this
         sandbox = Sandbox(applicationContext)
         fontSize = sp(11f)
-        if (autocorrect == null) autocorrect = Autocorrect(applicationContext) { sessions[Tab.Claude]?.write(it) }
 
         terminal = TerminalView(this, null).apply {
             setTerminalViewClient(this@MainActivity)
@@ -215,13 +214,12 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             maxLines = 1
             setTextColor(Color.LTGRAY)
             gravity = Gravity.CENTER
-            setOnClickListener(onClick)
+            setOnClickListener { autocorrect?.forget(); onClick(it) }   // the word being typed is unknown after any of these
         }.also { addView(it, LinearLayout.LayoutParams(0, -2, 1f)) }
 
         fun send(keyCode: Int, mod: Int = 0) = { _: View ->
             // handleKeyCode dereferences the emulator, which exists only once a session is attached
             // and laid out — not during setup.
-            autocorrect?.forget()
             if (terminal.currentSession?.emulator != null) terminal.handleKeyCode(keyCode, mod)
         }
         key("esc", send(KeyEvent.KEYCODE_ESCAPE))
@@ -248,6 +246,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         menu.add("Stop").setOnMenuItemClickListener { stop(applicationContext); true }
         menu.add("Autocorrect").setCheckable(true).setChecked(autocorrecting(this@MainActivity))
             .setOnMenuItemClickListener {
+                autocorrect?.forget()
                 prefs(this@MainActivity).edit().putBoolean(AUTOCORRECT, !autocorrecting(this@MainActivity)).apply()
                 true
             }
@@ -324,6 +323,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode != VOICE || resultCode != RESULT_OK) return
         val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return
+        autocorrect?.forget()
         current?.emulator?.paste(text)
     }
 
@@ -335,9 +335,9 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     }
 
     /**
-     * Android's monospace font, then symbols no system font has (Claude Code's ⏵⏵ mode marker among
-     * them) from a 70 KB cut of Noto Sans Symbols 2, then the system's usual fallbacks (emoji, CJK…).
-     * Plain monospace if the system font isn't at AOSP's path.
+     * Android's monospace font, then a 70 KB cut of Noto Sans Symbols 2 for symbols (Claude Code's
+     * ⏵⏵ mode marker among them, which no system font has), then the system's usual fallbacks
+     * (emoji, CJK…). Plain monospace if the system font isn't at AOSP's path.
      */
     private fun terminalTypeface(): Typeface = runCatching {
         fun family(font: Font) = FontFamily.Builder(font).build()
@@ -369,7 +369,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         val fix = corrector(session) ?: return false
         return when (keyCode) {
             KeyEvent.KEYCODE_DEL -> fix.backspace()
-            KeyEvent.KEYCODE_ENTER -> fix.typed('\r'.code)
+            // Alt/Shift+Enter is a newline in Claude Code, ctrl a different key: only a plain Enter waits.
+            KeyEvent.KEYCODE_ENTER -> if (e.hasNoModifiers() && !ctrl) fix.typed('\r'.code) else { fix.forget(); false }
             else -> { if (e.unicodeChar == 0) fix.forget(); false }   // characters arrive in onCodePoint
         }
     }
@@ -388,12 +389,16 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     override fun readFnKey() = false
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession): Boolean {
         val fix = corrector(session) ?: return false
-        if (ctrlDown) { fix.forget(); return false }
+        // A keyboard that commits Enter as text arrives as ctrl+M, which is the same CR.
+        if (ctrlDown) return if (codePoint == 'm'.code) fix.typed('\r'.code) else { fix.forget(); false }
         return fix.typed(codePoint)
     }
 
     /** Claude's prompt gets autocorrect (⋮ → Autocorrect, on by default); the shell never does. */
-    private fun corrector(session: TerminalSession) = autocorrect.takeIf { session === sessions[Tab.Claude] && autocorrecting(this) }
+    private fun corrector(session: TerminalSession): Autocorrect? {
+        if (session !== sessions[Tab.Claude] || !autocorrecting(this)) return null
+        return autocorrect ?: Autocorrect(applicationContext) { sessions[Tab.Claude]?.write(it) }.also { autocorrect = it }
+    }
     override fun onEmulatorSet() {}
 
     // ---------------- TerminalSessionClient ----------------
@@ -430,7 +435,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     override fun onPasteTextFromClipboard(session: TerminalSession) {
         val clip = getSystemService(ClipboardManager::class.java).primaryClip ?: return
         val text = clip.getItemAt(0).coerceToText(this).toString()
-        if (text.isNotEmpty()) session.emulator?.paste(text)
+        if (text.isNotEmpty()) { autocorrect?.forget(); session.emulator?.paste(text) }
     }
 
     override fun getTerminalCursorStyle(): Int = TerminalEmulator.DEFAULT_TERMINAL_CURSOR_STYLE
@@ -516,6 +521,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 // finds no session and boots, which goes straight to launching.
                 val activity = ui ?: return@post
                 sessions[tab]?.finishIfRunning()
+                autocorrect?.forget()
                 val env = sandbox.env().map { "${it.key}=${it.value}" }.toTypedArray()
                 val s = TerminalSession(argv[0], sandbox.workspace.absolutePath, argv, env, 2000, activity)
                 sessions[tab] = s

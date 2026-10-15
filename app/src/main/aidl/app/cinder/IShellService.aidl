@@ -28,7 +28,8 @@ interface IShellService {
 
     void releaseDisplay(int displayId) = 6;
 
-    // Sends a touch or key event to the display, as `input -d` would but without starting a process.
+    // Sends a touch or key event to a display this service created, as `input -d` would but without
+    // starting a process.
     // Returns false if Android refused it.
     boolean inject(int displayId, in InputEvent event) = 7;
 }

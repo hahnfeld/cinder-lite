@@ -5,7 +5,7 @@ Its own code is MIT licensed (see `LICENSE` in the source repository,
 https://github.com/hahnfeld/cinder-lite). The APK also contains the components below. Their license
 texts are in this directory, and corresponding source for each is at the link given.
 
-## Bundled native runtime
+## Bundled components
 
 | Component | Version | License | Source |
 |---|---|---|---|

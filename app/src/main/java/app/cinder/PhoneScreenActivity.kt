@@ -258,9 +258,28 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
         /** Set for a landscape phone screen (`phone start landscape`), for apps that only run that way. */
         const val EXTRA_LANDSCAPE = "landscape"
 
-        /** A key by name: `back`, `enter`, `KEYCODE_TAB` (the prefix and case are optional), or a number. */
-        fun keyCode(name: String) = KeyEvent.keyCodeFromString(name.uppercase())
-            .takeIf { it != KeyEvent.KEYCODE_UNKNOWN } ?: throw IllegalArgumentException("unknown key '$name'")
+        /**
+         * A key by name: `back`, `enter`, `KEYCODE_TAB` (the prefix and case are optional), or a number.
+         * Only keys an app handles: Android acts on power, volume, media and the like phone-wide,
+         * whichever display they're sent to.
+         */
+        fun keyCode(name: String): Int {
+            val code = KeyEvent.keyCodeFromString(name.uppercase())
+            require(code != KeyEvent.KEYCODE_UNKNOWN) { "unknown key '$name'" }
+            require(code in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 || code in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
+                code in APP_KEYS) { "phone key only sends keys an app handles, not '$name'" }
+            return code
+        }
+
+        private val APP_KEYS = setOf(
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_TAB,
+            KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_FORWARD_DEL, KeyEvent.KEYCODE_ESCAPE,
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_MOVE_HOME, KeyEvent.KEYCODE_MOVE_END,
+            KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SEARCH,
+            KeyEvent.KEYCODE_COMMA, KeyEvent.KEYCODE_PERIOD, KeyEvent.KEYCODE_MINUS, KeyEvent.KEYCODE_EQUALS,
+            KeyEvent.KEYCODE_SLASH, KeyEvent.KEYCODE_SEMICOLON, KeyEvent.KEYCODE_APOSTROPHE, KeyEvent.KEYCODE_AT,
+        )
 
         /**
          * The phone's own aspect ratio and dp size (so apps lay out as they do on the phone), portrait

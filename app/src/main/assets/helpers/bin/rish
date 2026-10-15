@@ -28,7 +28,7 @@ def main():
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock.connect("/tmp/rish.sock")
+        sock.connect("/usr/local/libexec/rish.sock")
     except OSError:
         sys.stderr.write(me + ": Shizuku support is off. Turn it on in Cinder Lite: ⋮ → Shizuku\n")
         return 1

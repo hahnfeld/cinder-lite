@@ -35,7 +35,7 @@ import java.util.zip.GZIPInputStream
  *     workspace/       the agent's cwd (/workspace)
  *     bin/             proot and the helper scripts (/usr/local/bin)
  *     lib/             proot's libraries: libtalloc, libandroid-shmem (/usr/local/androidlib)
- *     libexec/         proot's loader and Claude's system-prompt brief (/usr/local/libexec)
+ *     libexec/         proot's loader, Claude's system-prompt brief and hooks, rish's socket (/usr/local/libexec)
  *     lx/              the staged bionic linker64 (/usr/local/androidlibexec) — see [androidLibexec]
  *     tmp/             (/tmp)
  *     rootfs/          the Alpine tree that becomes /
@@ -127,11 +127,25 @@ class Sandbox(private val ctx: Context) {
      * leaves a truncated library that later runs would skip, and a running proot that has [to]
      * mapped keeps its old file.
      */
-    private fun stage(from: File, to: File, executable: Boolean = false) {
-        val part = File(to.path + ".part")
-        from.canonicalFile.copyTo(part, overwrite = true)
-        if (executable) part.setExecutable(true, false)
-        check(part.renameTo(to)) { "could not stage ${to.name}" }
+    private fun stage(from: File, to: File, executable: Boolean = false) =
+        replace(to, executable) { out -> from.canonicalFile.inputStream().use { it.copyTo(out, 1 shl 16) } }
+
+    /**
+     * Writes [to] through a temp file of its own and renames it into place. A process that has the
+     * old file open or mapped (a running proot, a script mid-run) keeps it, and two launches at once
+     * never write the same temp file.
+     */
+    private fun replace(to: File, executable: Boolean, write: (java.io.OutputStream) -> Unit) {
+        to.parentFile?.mkdirs()
+        val part = File.createTempFile(to.name, ".part", to.parentFile)
+        try {
+            part.outputStream().use(write)
+            part.setReadable(true, false)
+            if (executable) part.setExecutable(true, false)
+            check(part.renameTo(to)) { "could not install ${to.name}" }
+        } finally {
+            part.delete()   // gone already when the rename worked
+        }
     }
 
     /**
@@ -283,7 +297,9 @@ class Sandbox(private val ctx: Context) {
      */
     fun prootCommand(inner: String, asRoot: Boolean = false): Array<String> {
         // proot, its pieces and the helpers are writable from inside (they're bound in), so each
-        // session starts from the APK's copies: nothing the sandbox runs can make a lasting change.
+        // session starts from the APK's copies of them, and an app update's fixes reach existing
+        // installs. (The staged linker and libs in lx/ and androidlib64/ are only copied when missing.)
+        ensureLayout()
         installRuntime()
         writeHelpers()
         val proot = File(bin, "proot").takeIf { it.canExecute() }?.absolutePath ?: error("proot is not installed")
@@ -367,7 +383,6 @@ class Sandbox(private val ctx: Context) {
 
     /** Starts [inner] in the sandbox as a plain (non-terminal) process, for setup steps. */
     fun spawn(inner: String, asRoot: Boolean = false): Process {
-        ensureLayout()
         val pb = ProcessBuilder(*prootCommand(inner, asRoot)).directory(workspace)
         pb.environment().putAll(env())
         return pb.start()
@@ -380,24 +395,19 @@ class Sandbox(private val ctx: Context) {
      * (proot, getprop). Plus Claude's system-prompt brief and notification hooks, and a linker config
      * for the staged bionic linker (see assets/linkerconfig/ld.config.txt).
      */
-    fun writeHelpers() {
-        ensureLayout()
-        shims.mkdirs()
+    private fun writeHelpers() {
         copyAsset("brief.md", File(libexec, "cinder-brief.md"))
         copyAsset("claude-settings.json", File(libexec, "cinder-settings.json"))
         copyAsset("linkerconfig/ld.config.txt", File(rootfs, "linkerconfig/ld.config.txt"))
         for ((dir, target) in listOf("bin" to bin, "shims" to shims)) {
             for (name in ctx.assets.list("helpers/$dir").orEmpty()) {
-                copyAsset("helpers/$dir/$name", File(target, name)).setExecutable(true, false)
+                copyAsset("helpers/$dir/$name", File(target, name), executable = true)
             }
         }
     }
 
-    private fun copyAsset(name: String, to: File): File {
-        to.parentFile?.mkdirs()
-        ctx.assets.open(name).use { input -> to.outputStream().use { input.copyTo(it, 1 shl 16) } }
-        return to
-    }
+    private fun copyAsset(name: String, to: File, executable: Boolean = false) =
+        replace(to, executable) { out -> ctx.assets.open(name).use { it.copyTo(out, 1 shl 16) } }
 
     // ---------------- setup: run off the main thread, report through [log] ----------------
 
@@ -407,43 +417,28 @@ class Sandbox(private val ctx: Context) {
     val ready get() = bootstrapStamp.exists() && hasClaude && hasBaseTools
 
     /**
-     * Installs the runtime that ships inside the APK: proot with its loader and libraries, and the
-     * Alpine rootfs. Claude Code itself is deliberately not bundled — see [installClaude].
-     * The stamp is written last, so a rootfs unpack that was interrupted starts over next time.
+     * Unpacks the Alpine rootfs that ships inside the APK, once. (proot, its pieces and the helpers
+     * are copied out at every launch, by [prootCommand].) Claude Code itself is deliberately not
+     * bundled — see [installClaude]. The stamp is written last, so a rootfs unpack that was
+     * interrupted starts over next time.
      */
     fun bootstrap(log: (String) -> Unit) {
         ensureLayout()
-        // proot and its pieces (~300 KB) and the helper scripts are rewritten every launch, so an
-        // app update's fixes reach existing installs without touching the rootfs.
-        installRuntime()
-        if (bootstrapStamp.exists()) return writeHelpers()
+        if (bootstrapStamp.exists()) return
         log("unpacking Alpine rootfs…")
         deleteTree(rootfs)
         ctx.assets.open("rootfs.tgz").use { raw ->
             GZIPInputStream(BufferedInputStream(raw)).use { extractTar(it, into = rootfs) }
         }
-        ensureMountPoints()
-        writeHelpers()
         bootstrapStamp.writeText("1")
     }
 
-    /**
-     * Copies proot, its loaders and libraries out of the APK. Each lands under a temp name and is
-     * renamed into place, so a proot that's running keeps its old (still valid) file.
-     */
+    /** Copies proot, its loader and libraries out of the APK (see [replace]). */
     private fun installRuntime() {
-        val files = listOf(
-            Triple("proot", bin, true),
-            Triple("loader", libexec, true),
-            Triple("libtalloc.so.2", lib, false),
-            Triple("libandroid-shmem.so", lib, false)
-        )
-        for ((name, dir, exec) in files) {
-            val partial = copyAsset(name, File(dir, "$name.part"))
-            partial.setReadable(true, false)
-            if (exec) partial.setExecutable(true, false)
-            check(partial.renameTo(File(dir, name))) { "could not install $name" }
-        }
+        copyAsset("proot", File(bin, "proot"), executable = true)
+        copyAsset("loader", File(libexec, "loader"), executable = true)
+        copyAsset("libtalloc.so.2", File(lib, "libtalloc.so.2"))
+        copyAsset("libandroid-shmem.so", File(lib, "libandroid-shmem.so"))
     }
 
     /**

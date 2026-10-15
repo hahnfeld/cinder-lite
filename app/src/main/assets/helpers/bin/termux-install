@@ -27,7 +27,8 @@ command -v wget >/dev/null 2>&1 || apk add wget >/dev/null 2>&1 || { echo "! cou
 # job below).
 apk add xz zstd >/dev/null 2>&1 || true
 
-if [ ! -s "$MAP" ]; then
+# Termux keeps only the current version of each package: refetch the index twice a day.
+if [ ! -s "$MAP" ] || [ -n "$(find "$MAP" -mmin +720)" ]; then
   echo "fetching package index..."
   wget -O "$IDX" "$REPO/dists/stable/main/binary-aarch64/Packages"   # several MB: show progress
   awk '

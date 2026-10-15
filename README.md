@@ -59,7 +59,7 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 | Shell | One-shot commands on Android's host shell | A real bash in the sandbox, kept alongside Claude |
 | Phone files | Upload/export buttons | Shared storage mounted at `/sdcard` |
 | Claude Code install | Latest from npm, unverified | Latest from npm, sha512-verified, then Claude Code's native install with self-updates |
-| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,500 lines in 4 Kotlin files, plus ~1,000 in 4 for the optional Shizuku features |
+| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,500 lines in 4 Kotlin files, plus ~1,100 in 4 for the optional Shizuku features |
 | Release APK | ~33 MB (debug) | ~4.5 MB, signed, R8-shrunk |
 
 **Removed:** the stream-json bridge and transcript UI, markdown/LaTeX rendering, model/effort/
@@ -77,7 +77,9 @@ the 32-bit proot loader.
   Backspace right after a fix undoes it. Only plain words are touched, never commands, paths or
   code, and never in the shell. Gboard's top strip and number row can be hidden in Gboard's own
   settings (Preferences → Suggestion strip, and Number row for passwords: the terminal counts as one).
-- `/login` opens the phone's browser through an `xdg-open` shim limited to http(s) links.
+- `/login` opens the phone's default browser through an `xdg-open` shim limited to https links.
+- A bundled symbol font (a 70 KB subset of Noto Sans Symbols 2) for characters the system fonts
+  lack, such as Claude Code's ⏵⏵ mode marker.
 - First-run setup that can't run twice at once, resumes after interruption, shows download and
   install progress, and preinstalls bash, git, ripgrep, Python, Node.js and common tools.
 - Sandbox helper scripts live as real files in `assets/helpers/` instead of Kotlin strings.
@@ -107,8 +109,9 @@ the 32-bit proot loader.
   phone notifications, via hooks
   passed with `--settings`; your own Claude settings are untouched
 - **⋮ menu** — switch between Claude and a Shell (bash in the same sandbox; both keep running and
-  keep their scrollback) · Restart the one you're looking at · Stop · Reinstall sandbox (a clean
-  reset that keeps your login and `/workspace`)
+  keep their scrollback) · Restart the one you're looking at · Stop · Autocorrect (on/off) ·
+  Shizuku (on/off; see below) · Reinstall sandbox (a clean reset that keeps your login and
+  `/workspace`)
 - **Package management without root** — `apk add`, `npm -g`, `pip install`, plus Android build and
   APK decompile tools
 - **Optional adb-shell access via [Shizuku](https://shizuku.rikka.app/)** — off by default; see
@@ -121,7 +124,8 @@ device's own libraries plus the tools themselves.
 
 **Trust model:** Claude Code and anything it runs can read and write everything under `/sdcard`
 once storage access is granted, and can reach the network. That's the point — but use Claude Code's
-own permission prompts accordingly.
+own permission prompts accordingly. With Shizuku on, it also has adb-shell power
+([see below](#be-deliberate-about-turning-it-on)).
 
 <br>
 
@@ -297,7 +301,7 @@ reaches the app through a small bridge:
 
 ```
 sandbox   rish -c 'pm list packages'          (a short Python script)
-            │  Unix socket "cinder-rish": the command, plus rish's own stdout and stderr
+            │  Unix socket /usr/local/libexec/rish.sock: the command, plus rish's own stdout and stderr
             ▼
 app       ShizukuBridge   checks the caller is the app's own sandbox (same uid)
             │  binder
@@ -308,9 +312,10 @@ Shizuku   ShellService    runs /system/bin/sh -c '…' as the shell user (uid 20
 sandbox   rish            exits with the command's exit status
 ```
 
-- **The bridge** (`ShizukuBridge.kt`) is a socket in Android's abstract namespace, opened only while
-  the setting is on. Any app could connect to it, so every connection is checked: only processes
-  running as Cinder Lite's own uid (its sandbox) are served. Anything else is dropped.
+- **The bridge** (`ShizukuBridge.kt`) is a Unix socket at the sandbox's `/usr/local/libexec/rish.sock`,
+  in Cinder Lite's private storage, open only while the setting is on. Other apps can't reach it,
+  and every connection is checked anyway: only processes running as Cinder Lite's own uid (its
+  sandbox) are served. `rish` in turn checks that the socket belongs to Cinder Lite.
 - **The service** (`ShellService.kt`) is a Shizuku *user service*. Shizuku starts it in a separate
   process with shell privileges, from Cinder Lite's own APK. It runs one shell per `rish` call.
 - **Output goes through pipes**, not straight to your terminal. Android's security policy (SELinux)
@@ -378,10 +383,11 @@ without closing it.
 How it works: Cinder Lite's Shizuku service creates the virtual display with adb-shell privileges,
 the same way scrcpy's `--new-display` does, and the display draws straight into the PiP window, with
 no video encoding or streaming. Taps, swipes and keys reach it as input events from the Shizuku
-service, without starting a process for each. The display has its own focus and no keyboard, so
-taps and typing there never reach your screen, and yours never reach it. Closing the window (its ✕, a swipe, or
-`phone stop`) closes the display and the apps on it; they don't move onto your screen. Turning
-Shizuku off closes it too.
+service, without starting a process for each (`phone key` only sends keys an app handles: never
+power, volume or media keys, which Android applies phone-wide). The display has its own focus and
+no keyboard, so taps and typing there never reach your screen, and yours never reach it. Closing
+the window (its ✕, a swipe, or `phone stop`) closes the display and the apps on it; they don't move
+onto your screen. Turning Shizuku off closes it too.
 
 Limits:
 
@@ -480,7 +486,8 @@ unmodified from termux-app v0.118.0), the Gradle wrapper (Apache-2.0), and the b
 The APK bundles open-source components: proot (GPL-2.0), libtalloc (LGPL-3.0), libandroid-shmem
 (BSD-3-Clause), the unmodified Alpine Linux 3.24.2 minirootfs (busybox, apk-tools and others under
 GPL-2.0; musl MIT; OpenSSL Apache-2.0; ca-certificates MPL-2.0; zlib), Termux terminal-view /
-terminal-emulator (Apache-2.0) and the Kotlin standard library (Apache-2.0). Exact versions, a
+terminal-emulator (Apache-2.0), the Kotlin standard library (Apache-2.0), the Shizuku API (MIT)
+and a subset of the Noto Sans Symbols 2 font (OFL-1.1). Exact versions, a
 per-package license list, links to corresponding source and the full license texts are in
 [`app/src/main/assets/licenses/`](app/src/main/assets/licenses/THIRD-PARTY-NOTICES.md), which ships
 inside the APK.

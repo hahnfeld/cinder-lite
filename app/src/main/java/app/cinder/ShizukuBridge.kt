@@ -35,9 +35,10 @@ import kotlin.concurrent.thread
  * Optional adb-shell access for the sandbox through the Shizuku app (⋮ → Shizuku, off by default).
  *
  * The sandbox's `rish` can't use Shizuku itself: Shizuku's own client runs Android's Java runtime,
- * which can't start inside proot. So `rish` connects here, over a socket in the sandbox's /tmp, and
- * this relays the command to [ShellService], which Shizuku runs with adb-shell privileges. The socket
- * lives in app-private storage, so no other app can reach it or put one of its own in its place.
+ * which can't start inside proot. So `rish` connects here, over a Unix socket in the sandbox's
+ * /usr/local/libexec, and this relays the command to [ShellService], which Shizuku runs with
+ * adb-shell privileges. The socket lives in app-private storage, so no other app can reach it or put
+ * one of its own in its place.
  *
  * Protocol: the client sends one JSON line {"cmd", "interactive"} with its stdout and stderr fds
  * attached (SCM_RIGHTS), then frames — 'D' + length + stdin bytes, 'E' (stdin ended), 'K' (killed).
@@ -225,18 +226,17 @@ object ShizukuBridge {
         /** Does [action] on the phone screen, then prints the screen it leads to, if Claude can read it. */
         fun act(quiet: Long = 300, longest: Long = 2000, action: (PhoneScreenActivity) -> Unit) {
             val screen = screen()
-            if (screen.held) {
-                // The user has taken the phone screen over: wait for it back, then let Claude decide again.
-                check(until(90_000) { !screen.held }) { "the user is using the phone screen (it's full size); try again later" }
-                PhoneAccessibility.instance?.let { print(it.ui(screen().displayId)) }
-                error("the user used the phone screen and has given it back; nothing was done. It may have changed")
-            }
-            val a11y = PhoneAccessibility.instance ?: return action(screen)
+            val a11y = PhoneAccessibility.instance
             try {
-                print(a11y.after(screen.displayId, quiet, longest) { action(screen) })
+                if (screen.held) {
+                    // The user has taken the phone screen over: wait for it back, then let Claude decide again.
+                    check(until(90_000) { !screen.held }) { "the user is using the phone screen (it's full size); try again later" }
+                    error("the user used the phone screen and has given it back; nothing was done. It may have changed")
+                }
+                if (a11y == null) action(screen) else print(a11y.after(screen.displayId, quiet, longest) { action(screen) })
             } catch (e: Exception) {
-                // A refused or failed action shows the screen as it is now, to pick again from.
-                runCatching { print(a11y.ui(screen.displayId)) }
+                // Refused, failed or held: show the screen as it is now, to pick again from.
+                if (a11y != null) live()?.let { runCatching { print(a11y.ui(it.displayId)) } }
                 throw e
             }
         }
@@ -249,7 +249,10 @@ object ShizukuBridge {
                 }
                 // A different shape is a new display: the old one closes, with its apps.
                 PhoneScreenActivity.current?.takeIf { it.spec.landscape != landscape }?.let { old ->
+                    val id = old.displayId
                     main.post(old::close)
+                    // Its apps are gone before the new display opens, so none moves across.
+                    if (id >= 0) runCatching { connect(ctx).releaseDisplay(id) }
                     until(5_000) { PhoneScreenActivity.current == null }
                     print("closed the ${if (landscape) "portrait" else "landscape"} phone screen and its apps\n")
                 }
@@ -292,8 +295,8 @@ object ShizukuBridge {
         }
     }
 
-    /** The socket `rish` connects to: the sandbox's /tmp/rish.sock. */
-    private fun socketFile(ctx: Context) = File(ctx.filesDir, "tmp/rish.sock")
+    /** The socket `rish` connects to: the sandbox's /usr/local/libexec/rish.sock, which nothing there cleans up. */
+    private fun socketFile(ctx: Context) = File(ctx.filesDir, "libexec/rish.sock")
 
     private val COMPONENT = Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+")
 
@@ -374,7 +377,11 @@ object ShizukuBridge {
                 override fun onServiceDisconnected(name: ComponentName?) { service = null }
             }
             connection = conn
-            main.post { runCatching { Shizuku.bindUserService(serviceArgs(ctx), conn) }.onFailure { bound.countDown() } }
+            main.post {
+                // On main, where stop() runs: support turned off since the check above binds nothing.
+                if (server == null) bound.countDown()
+                else runCatching { Shizuku.bindUserService(serviceArgs(ctx), conn) }.onFailure { bound.countDown() }
+            }
             bound.await(20, TimeUnit.SECONDS)
             return service ?: error("couldn't start the Shizuku service")
         }

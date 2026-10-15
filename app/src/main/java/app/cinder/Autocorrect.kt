@@ -19,7 +19,7 @@ import android.view.textservice.TextServicesManager
  * Keys are never held back, except Enter, which waits (half a second at most) for the last word's
  * check so the prompt isn't sent before it. Only plain words are checked: letters and apostrophes,
  * maybe a capital first, maybe punctuation after ("teh," is "teh"). Anything else (README.md,
- * getProp, ../src) is left alone, as is everything after a key that moves or edits the line.
+ * getProp, ../src) is left alone, as is the rest of a word after a key that moves or edits the line.
  *
  * Runs on the main thread, where the keys and the checker's answers arrive. [type] writes to the
  * terminal.
@@ -29,8 +29,8 @@ class Autocorrect(ctx: Context, private val type: (String) -> Unit) : SpellCheck
     /** A word sent to the checker: what was typed after it (already passed on), and whether Enter waits on it. */
     private class Check(val word: String, val tail: String, val since: StringBuilder, var enter: Boolean = false)
 
-    private val checker = ctx.getSystemService(TextServicesManager::class.java)
-        ?.newSpellCheckerSession(null, null, this, true)   // the user's own spell checker and languages
+    private val services = ctx.getSystemService(TextServicesManager::class.java)
+    private var checker = newSession()
     private var asked = 0   // numbers each question, so a late answer is never applied to a later word
     private val word = StringBuilder()
     private val tail = StringBuilder()   // punctuation right after the word
@@ -39,7 +39,13 @@ class Autocorrect(ctx: Context, private val type: (String) -> Unit) : SpellCheck
     private val afterEnter = StringBuilder()   // typed while Enter waits
     private var undo: String? = null   // what an immediate backspace types, after a fix
     private val main = Handler(Looper.getMainLooper())
-    private val giveUp = Runnable { finish(null) }   // Enter mustn't wait on a checker that never answers
+    // Enter mustn't wait on a checker that doesn't answer. One that doesn't may have died (the keyboard
+    // app updated, say), and this process lives on: start a new session for the next word.
+    private val giveUp = Runnable {
+        checker?.close()
+        checker = newSession()
+        finish(null)
+    }
 
     init {
         ask("hello")   // the checker's first answer is slow; get it out of the way before any typing
@@ -50,12 +56,16 @@ class Autocorrect(ctx: Context, private val type: (String) -> Unit) : SpellCheck
         if (check?.enter == true) { afterEnter.appendCodePoint(c); return true }
         undo = null
         if (c == '\r'.code || c == '\n'.code) {
-            if (worthChecking()) start(StringBuilder())
+            if (worthChecking()) start(StringBuilder()) else reset()
             check?.let { it.enter = true; main.postDelayed(giveUp, 500); return true }
-            reset()
             return false
         }
-        check?.let { it.since.appendCodePoint(c); if (it.since.length > 40) check = null }   // too late to retype
+        // Retyping erases what came after the word character by character: give up past a line's
+        // worth, or past an emoji or combining mark that the terminal draws as one but counts as more.
+        check?.let {
+            it.since.appendCodePoint(c)
+            if (it.since.length > 40 || c > 0xFFFF || Character.getType(c) == Character.NON_SPACING_MARK.toInt() || c == 0x200D) check = null
+        }
         when {
             c == ' '.code -> if (worthChecking()) start(StringBuilder().append(' ')) else reset()
             c in PUNCTUATION -> if (word.isEmpty()) plain = false else tail.appendCodePoint(c)
@@ -103,6 +113,8 @@ class Autocorrect(ctx: Context, private val type: (String) -> Unit) : SpellCheck
         tail.setLength(0)
         plain = true
     }
+
+    private fun newSession() = services?.newSpellCheckerSession(null, null, this, true)   // the user's own checker and languages
 
     private fun ask(text: String) {
         checker?.getSentenceSuggestions(arrayOf(TextInfo(text, 0, ++asked)), 3)
