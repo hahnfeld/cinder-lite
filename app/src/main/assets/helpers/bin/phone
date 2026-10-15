@@ -5,7 +5,8 @@
 # Cinder Lite does the work: every command but help goes straight to it through rish.
 usage() {
   cat <<'USAGE'
-phone start                     open the phone screen (a picture-in-picture window)
+phone start [landscape]         open the phone screen (a picture-in-picture window); landscape
+                                for apps that only run that way (switching closes the open apps)
 phone stop                      close it, and the apps on it
 phone ui                        list the on-screen elements, numbered, with text and bounds
 phone shot [file]               screenshot (default /tmp/phone.png); prints the path

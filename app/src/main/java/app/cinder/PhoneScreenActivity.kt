@@ -42,9 +42,11 @@ import kotlin.concurrent.thread
 class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
 
     /** The display's size: the phone's own, scaled down so its long edge is [LONG_EDGE]. */
-    class Spec(val width: Int, val height: Int, val dpi: Int)
+    class Spec(val width: Int, val height: Int, val dpi: Int) {
+        val landscape get() = width > height
+    }
 
-    val spec by lazy { spec(this) }
+    val spec by lazy { spec(this, intent.getBooleanExtra(EXTRA_LANDSCAPE, false)) }
     @Volatile private var shell: IShellService? = null
     private lateinit var view: SurfaceView
     @Volatile var displayId = -1
@@ -253,24 +255,29 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
         @Volatile var failure: String? = null
         /** Set when `phone start` comes from the terminal on screen, to give it the focus back. */
         const val EXTRA_FROM_TERMINAL = "from-terminal"
+        /** Set for a landscape phone screen (`phone start landscape`), for apps that only run that way. */
+        const val EXTRA_LANDSCAPE = "landscape"
 
         /** A key by name: `back`, `enter`, `KEYCODE_TAB` (the prefix and case are optional), or a number. */
         fun keyCode(name: String) = KeyEvent.keyCodeFromString(name.uppercase())
             .takeIf { it != KeyEvent.KEYCODE_UNKNOWN } ?: throw IllegalArgumentException("unknown key '$name'")
 
         /**
-         * Portrait, the phone's own aspect ratio and dp size (so apps lay out as they do on the
-         * phone), at a resolution small enough that Claude sees screenshots unscaled: then
-         * screenshot pixels, element bounds and tap coordinates are all the same numbers.
+         * The phone's own aspect ratio and dp size (so apps lay out as they do on the phone), portrait
+         * or [landscape], at a resolution small enough that Claude sees screenshots unscaled: then
+         * screenshot pixels, element bounds and tap coordinates are all the same numbers. A virtual
+         * display doesn't turn for apps that only run in landscape, so it's made that shape instead.
          */
         @Suppress("DEPRECATION")
-        fun spec(ctx: Context): Spec {
+        fun spec(ctx: Context, landscape: Boolean): Spec {
             val metrics = DisplayMetrics()
             ctx.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY).getRealMetrics(metrics)
             val short = minOf(metrics.widthPixels, metrics.heightPixels).toDouble()
             val long = minOf(maxOf(metrics.widthPixels, metrics.heightPixels).toDouble(), short * MAX_ASPECT)
             val scale = LONG_EDGE / long
-            return Spec((short * scale).toInt() / 2 * 2, LONG_EDGE, (metrics.densityDpi * scale).toInt())
+            val across = (short * scale).toInt() / 2 * 2
+            val dpi = (metrics.densityDpi * scale).toInt()
+            return if (landscape) Spec(LONG_EDGE, across, dpi) else Spec(across, LONG_EDGE, dpi)
         }
     }
 }

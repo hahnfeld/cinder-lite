@@ -242,11 +242,23 @@ object ShizukuBridge {
         }
         when (op.optString(0)) {
             "start" -> {
+                val landscape = when (op.optString(1)) {
+                    "", "portrait" -> false
+                    "landscape" -> true
+                    else -> error("phone start [portrait|landscape]")
+                }
+                // A different shape is a new display: the old one closes, with its apps.
+                PhoneScreenActivity.current?.takeIf { it.spec.landscape != landscape }?.let { old ->
+                    main.post(old::close)
+                    until(5_000) { PhoneScreenActivity.current == null }
+                    print("closed the ${if (landscape) "portrait" else "landscape"} phone screen and its apps\n")
+                }
                 val screen = live() ?: run {
                     connect(ctx)
                     PhoneScreenActivity.failure = null
                     ctx.startActivity(Intent(ctx, PhoneScreenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        .putExtra(PhoneScreenActivity.EXTRA_FROM_TERMINAL, MainActivity.visible))
+                        .putExtra(PhoneScreenActivity.EXTRA_FROM_TERMINAL, MainActivity.visible)
+                        .putExtra(PhoneScreenActivity.EXTRA_LANDSCAPE, landscape))
                     until(10_000) { PhoneScreenActivity.failure?.let { error(it) }; live() != null }
                     live() ?: error("Android didn't open the phone screen. Open Cinder Lite and try again.")
                 }

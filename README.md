@@ -342,7 +342,8 @@ anywhere, or expand it to take it over. Ask something like *"open Settings on th
 the Android version"* and Claude uses the `phone` command:
 
 ```sh
-phone start                  # open the phone screen (the PiP window)
+phone start                  # open the phone screen (the PiP window); `phone start landscape` for
+                             # apps that only run in landscape, which otherwise show in a strip
 phone open com.android.settings
 phone ui                     # the on-screen elements, numbered, with text and bounds
 phone click 15 'About phone' # click element 15, named as phone ui lists it
