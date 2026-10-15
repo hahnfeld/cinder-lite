@@ -24,9 +24,9 @@ phone hold N 'name'             long-press element N (a context menu, say)
 phone doubletap N 'name'        double-tap element N
 phone find 'text'               scroll until an element named that is on screen (both ways)
 phone read [pages] [fresh]      read a long list: its text, a screen at a time (4, at most 9),
-                                only lines not read before, so reading again goes on; fresh restarts
+                                only lines not read before, so reading again goes on; fresh for a new list
 phone tap X Y                   tap at display pixels
-phone swipe X1 Y1 X2 Y2 [ms]
+phone swipe X1 Y1 X2 Y2 [ms]    swipe over ms milliseconds (300 by default, 5000 at most)
 phone text 'text'               type into the focused field
 phone key NAME                  press a key: back, enter, tab, del, space, or a letter or digit
 On Android only:

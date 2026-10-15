@@ -213,11 +213,11 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
-    /** Types [text] into the focused field, key by key. */
-    fun text(text: String) {
-        val events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(text.toCharArray())
-            ?: error("phone text only types keyboard characters. Use phone type N 'name' 'text' instead")
+    /** Types [text] into the focused field, key by key; false, typing nothing, if some character has no key. */
+    fun text(text: String): Boolean {
+        val events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(text.toCharArray()) ?: return false
         events.forEach { inject(it.apply { source = InputDevice.SOURCE_KEYBOARD }) }
+        return true
     }
 
     private fun touch(down: Long, time: Long, action: Int, x: Float, y: Float) {

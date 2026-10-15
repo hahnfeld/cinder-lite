@@ -53,6 +53,7 @@ object ShizukuBridge {
     private const val TAG = "cinder-rish"
     private const val PREF = "shizuku"
     private const val REQUEST = 7
+    private const val NO_FOCUS = "(no text field had focus, so the text may have gone nowhere: click the field first)\n"
     private const val NO_ACCESSIBILITY = "Claude can't read the phone screen: \"Cinder Lite phone screen\" is off in " +
         "Android's Accessibility settings. The user has been told how to turn it on (phone setup opens the page). " +
         "Until then use phone shot and phone tap."
@@ -224,6 +225,13 @@ object ShizukuBridge {
             .also { check(!it.stopped) { "the phone is asleep; the phone screen resumes when its screen is back on" } }
         fun a11y() = PhoneAccessibility.instance ?: run { remind(ctx); error(NO_ACCESSIBILITY) }
         fun print(text: String) { out.write(text.toByteArray()); out.flush() }
+        /** A point given in display pixels, refused off the phone screen, where a touch would go nowhere. */
+        fun point(i: Int): Pair<Float, Float> {
+            val x = number(i); val y = number(i + 1)
+            val spec = screen().spec
+            check(x >= 0 && y >= 0 && x < spec.width && y < spec.height) { "$x,$y is off the phone screen (${spec.width}x${spec.height})" }
+            return x to y
+        }
         /** Does [action] on the phone screen, then prints the screen it leads to, if Claude can read it. */
         fun act(quiet: Long = 300, longest: Long = 2000, action: (PhoneScreenActivity) -> Unit) {
             val screen = screen()
@@ -269,7 +277,8 @@ object ShizukuBridge {
                 print("phone screen open: display ${screen.displayId}, ${screen.spec.width}x${screen.spec.height}\n")
                 if (PhoneAccessibility.instance == null) { remind(ctx); print("Note: $NO_ACCESSIBILITY\n") }
             }
-            "stop" -> PhoneScreenActivity.current?.let { main.post(it::close) }
+            "stop" -> PhoneScreenActivity.current?.let { main.post(it::close); print("closed the phone screen and its apps\n") }
+                ?: print("the phone screen wasn't open\n")
             "shot" -> out.write(screen().shot())
             "setup" -> {
                 PhoneAccessibility.openSettings(ctx)
@@ -287,9 +296,10 @@ object ShizukuBridge {
                         else "awake: phone control works\n" } ?: "") +
                     "Accessibility: ${if (PhoneAccessibility.instance != null) "on" else "off (phone setup)"}\n")
             }
-            "click" -> { val n = number(1).toInt(); val named = arg(2); act { a11y().click(n, named) } }
+            "click" -> { val n = number(1).toInt(); val named = arg(2); act { s -> a11y().click(n, named) { x, y -> s.tap(x, y) } } }
             "type" -> {
-                val n = number(1).toInt(); val named = arg(2); val text = op.optString(3)
+                val n = number(1).toInt(); val named = arg(2)
+                val text = if (op.length() > 3) op.optString(3) else error("missing the text to put in it ('' empties it); see: phone help")
                 act { a11y().type(n, named, text) }
             }
             "scroll" -> { val n = number(1).toInt(); val direction = arg(2); act { a11y().scroll(n, direction) } }
@@ -312,15 +322,30 @@ object ShizukuBridge {
                 act { a11y().find(it.displayId, text) }
                 a11y().match(text)?.let { print("found: element $it\n") }
             }
-            "tap" -> { val x = number(1); val y = number(2); act { it.tap(x, y) } }
+            "tap" -> { val (x, y) = point(1); act { it.tap(x, y) } }
             "swipe" -> {
-                val (x1, y1, x2, y2) = (1..4).map(::number)
-                val ms = if (op.length() > 5) number(5).toLong().coerceIn(0, 10_000) else 300
+                val (x1, y1) = point(1); val (x2, y2) = point(3)
+                val ms = if (op.length() > 5) number(5).toLong().coerceIn(0, 5000) else 300
                 act { it.swipe(x1, y1, x2, y2, ms) }
             }
             "key" -> { val code = PhoneScreenActivity.keyCode(arg(1)); act { it.key(code) } }
-            "text" -> { val text = arg(1); act { it.text(text) } }
-            "open" -> { val pkg = packageFor(ctx, arg(1)); act(quiet = 600, longest = 5000) { open(ctx, it.displayId, pkg) } }
+            "text" -> {
+                val text = arg(1)
+                var unfocused = false
+                act { s ->
+                    val a11y = PhoneAccessibility.instance
+                    unfocused = a11y != null && a11y.focusedField(s.displayId) == null
+                    // Characters no key types (emoji, other scripts) go straight into the focused field.
+                    if (!s.text(text)) (a11y ?: error("phone text types keyboard characters only, without Accessibility on " +
+                        "(phone setup); use phone type N 'name' 'text'")).insert(s.displayId, text)
+                }
+                if (unfocused) print(NO_FOCUS)
+            }
+            "open" -> {
+                val pkg = packageFor(ctx, arg(1))
+                check(pkg != ctx.packageName) { "that's Cinder Lite itself, which stays on the user's screen" }
+                act(quiet = 600, longest = 5000) { open(ctx, it.displayId, pkg) }
+            }
             "close" -> { val pkg = packageFor(ctx, arg(1)); act { close(ctx, it.displayId, pkg) } }
             "link" -> {
                 val url = arg(1)
@@ -382,12 +407,14 @@ object ShizukuBridge {
             .sortedBy { it.first.lowercase() }
     }
 
-    /** An app's package, from the package itself or the app's name (exactly, else a part of it). */
+    /** An app's package, from the package itself or the app's name: exactly, else a part only one app's name has. */
     private fun packageFor(ctx: Context, target: String): String {
         if (ctx.packageManager.getLaunchIntentForPackage(target) != null) return target
         val apps = apps(ctx)
-        return (apps.firstOrNull { it.first.equals(target, true) } ?: apps.firstOrNull { it.first.contains(target, true) })
-            ?.second ?: error("no app found for '$target' (phone apps lists them)")
+        val near = apps.filter { it.first.contains(target.trim(), true) }
+        return (apps.firstOrNull { it.first.equals(target.trim(), true) } ?: near.singleOrNull())?.second
+            ?: error(if (near.isEmpty()) "no app is named '$target' (phone apps lists them)"
+                else "several apps' names have '$target' in them: ${near.take(5).joinToString { "${it.first} (${it.second})" }}; name one exactly")
     }
 
     /** Closes [pkg] on the phone screen: removes its tasks there, as swiping it away in Recents does. */

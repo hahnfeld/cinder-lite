@@ -64,7 +64,8 @@ class PhoneAccessibility : AccessibilityService() {
             while (SystemClock.uptimeMillis() - start < longest) {
                 if (SystemClock.uptimeMillis() - changed < quiet) { Thread.sleep(50); continue }
                 val list = ui(displayId)
-                if (list == last) return list
+                // Between two screens (an app opening, a page sliding in) there can be none to list.
+                if (list == last && list != NOTHING) return list
                 last = list
                 Thread.sleep(100)
             }
@@ -128,47 +129,94 @@ class PhoneAccessibility : AccessibilityService() {
         if (more) out.append("… more than $MAX_ELEMENTS elements; scroll to see the rest\n")
         nodes = found
         shown = displayId
-        return out.ifEmpty { "(nothing on the phone screen yet)\n" }.toString()
+        return out.ifEmpty { NOTHING }.toString()
     }
 
     /**
      * Text an app put on screen, made safe to list: on one line, without control characters (an app
      * could otherwise draw lines of its own that look like elements or messages), at most 120 chars.
      */
-    private fun clean(text: CharSequence?) =
-        text?.toString().orEmpty().replace(CONTROL, " ").replace('"', '\'').trim().take(120)
+    private fun clean(text: CharSequence?, limit: Int = 120) =
+        text?.toString().orEmpty().replace(CONTROL, " ").replace('"', '\'').trim().take(limit)
 
     /** An element's text, description and hint, as [ui] lists them. A password field's text never is. */
-    private fun label(node: AccessibilityNodeInfo) = listOfNotNull(node.text.takeUnless { node.isPassword }, node.contentDescription, node.hintText)
-        .map(::clean).filter { it.isNotEmpty() }.distinct().joinToString(" | ")
+    private fun label(node: AccessibilityNodeInfo, limit: Int = 120) =
+        listOfNotNull(node.text.takeUnless { node.isPassword }, node.contentDescription, node.hintText)
+            .map { clean(it, limit) }.filter { it.isNotEmpty() }.distinct().joinToString(" | ")
 
     /** What [ui] calls an element: its label, else its view id as "#id" (empty if neither). */
     private fun name(node: AccessibilityNodeInfo) =
         label(node).ifEmpty { node.viewIdResourceName?.let { "#" + clean(it.substringAfter(":id/")) }.orEmpty() }
 
-    /** Clicks element [n], or the nearest clickable element around it (a row around its label). */
-    fun click(n: Int, named: String) {
+    /**
+     * Clicks element [n], or the nearest clickable element around it (a row around its label); one
+     * accessibility doesn't call clickable (a custom view, a game's) gets a tap at its centre ([tap]).
+     */
+    fun click(n: Int, named: String, tap: (Float, Float) -> Unit) {
         var node: AccessibilityNodeInfo? = node(n, named)
         while (node != null && !node.isClickable) node = node.parent
-        if (node?.performAction(AccessibilityNodeInfo.ACTION_CLICK) != true) {
-            val r = Rect().also(node(n)::getBoundsInScreen)
-            error("element $n can't be clicked. Try: phone tap ${r.centerX()} ${r.centerY()}")
-        }
+        if (node?.performAction(AccessibilityNodeInfo.ACTION_CLICK) != true) centre(n).let { (x, y) -> tap(x, y) }
     }
 
-    /** Replaces the text of field [n] directly, without a keyboard. */
+    /** Replaces the text of field [n] (or the field inside it: a labelled form row) directly, without a keyboard. */
     fun type(n: Int, named: String, text: String) {
-        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        check(node(n, named).performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-            "element $n isn't a text field. Click it, then try: phone text '…'"
-        }
+        val node = node(n, named)
+        val field = if (node.isEditable) node else editableIn(node) ?: error("element $n isn't a text field. Click it, then try: phone text '…'")
+        // Focused, as a tap leaves it, so phone key enter and phone text go to it next.
+        if (!field.isFocused) field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        check(setText(field, text)) { "element $n didn't take the text. Click it, then try: phone text '…'" }
+        cursor(field, text.length)
     }
 
-    /** Scrolls element [n], or the nearest scrollable element around it. */
+    /** The first text field inside [node], a few levels down at most. */
+    private fun editableIn(node: AccessibilityNodeInfo, levels: Int = 4): AccessibilityNodeInfo? {
+        if (levels == 0) return null
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (child.isEditable && child.isVisibleToUser) return child
+            editableIn(child, levels - 1)?.let { return it }
+        }
+        return null
+    }
+
+    private fun setText(field: AccessibilityNodeInfo, text: String) = field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,
+        Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) })
+
+    /** The text field with input focus on the display, if there is one. */
+    fun focusedField(displayId: Int): AccessibilityNodeInfo? = windowsOnAllDisplays[displayId].orEmpty()
+        .firstNotNullOfOrNull { w -> w.root?.let { it.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { f -> f.isEditable } ?: focusedIn(it) } }
+
+    /** The focused text field under [node]: browsers' findFocus stops at their own view, above the page's fields. */
+    private fun focusedIn(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isEditable && node.isFocused) return node
+        for (i in 0 until node.childCount) focusedIn(node.getChild(i) ?: continue)?.let { return it }
+        return null
+    }
+
+    /** Puts [text] in the focused field at its cursor, as keys would: for characters no key types (emoji, other scripts). */
+    fun insert(displayId: Int, text: String) {
+        val field = focusedField(displayId) ?: error("no text field has focus on the phone screen: click one first")
+        val now = if (field.isShowingHintText) "" else field.text?.toString().orEmpty()
+        // A password field lists dots, not its text: setting dots plus the new text would replace the password.
+        check(!field.isPassword || now.isEmpty()) {
+            "only keyboard characters can be added to a password; use phone type N 'name' 'text' to set the whole password"
+        }
+        val start = field.textSelectionStart; val end = field.textSelectionEnd
+        val (a, b) = if (start in 0..now.length && end in start..now.length) start to end else now.length to now.length
+        check(setText(field, now.substring(0, a) + text + now.substring(b))) { "the focused field didn't take the text" }
+        cursor(field, a + text.length)
+    }
+
+    private fun cursor(field: AccessibilityNodeInfo, at: Int) = field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, Bundle().apply {
+        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, at)
+        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, at)
+    })
+
+    /**
+     * Scrolls element [n], or the nearest scrollable element around it that scrolls that way: in a
+     * list of carousels, left and right scroll the carousel, up and down the list.
+     */
     fun scroll(n: Int, direction: String) {
-        var node: AccessibilityNodeInfo? = node(n)
-        while (node != null && !node.isScrollable) node = node.parent
-        node ?: error("element $n isn't in a scrollable area. Try: phone swipe")
         val action = when (direction) {
             "up" -> AccessibilityAction.ACTION_SCROLL_UP
             "down" -> AccessibilityAction.ACTION_SCROLL_DOWN
@@ -176,25 +224,47 @@ class PhoneAccessibility : AccessibilityService() {
             "right" -> AccessibilityAction.ACTION_SCROLL_RIGHT
             else -> error("scroll direction must be up, down, left or right")
         }
-        // Lists that only offer forward/backward: down and right are forward.
+        // Lists that only offer forward/backward: down and right are forward, if the list goes that way.
         val fallback = if (direction == "up" || direction == "left") AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
             else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        check(node.performAction(action.id) || node.performAction(fallback)) { "element $n didn't scroll $direction" }
+        val across = direction == "left" || direction == "right"
+        var node: AccessibilityNodeInfo? = node(n)
+        var any = false
+        while (node != null) {
+            if (node.isScrollable) {
+                any = true
+                if (action in node.actionList && node.performAction(action.id)) return
+                if (sideways(node) == across && node.performAction(fallback)) return
+            }
+            node = node.parent
+        }
+        error(if (any) "element $n didn't scroll $direction: it's at the end that way, or only scrolls the other way"
+            else "element $n isn't in a scrollable area. Try: phone swipe")
+    }
+
+    /** Scrolls only sideways: a carousel, a pager. */
+    private fun sideways(node: AccessibilityNodeInfo): Boolean {
+        val actions = node.actionList
+        val info = node.collectionInfo
+        return AccessibilityAction.ACTION_SCROLL_DOWN !in actions && AccessibilityAction.ACTION_SCROLL_UP !in actions &&
+            (AccessibilityAction.ACTION_SCROLL_RIGHT in actions || AccessibilityAction.ACTION_SCROLL_LEFT in actions ||
+                node.className?.contains("HorizontalScrollView") == true || info != null && info.rowCount == 1 && info.columnCount > 1)
     }
 
     /** Long-presses element [n]: its long-click action, or, when it has none, a held touch at its centre ([press]). */
     fun hold(n: Int, named: String, press: (Float, Float) -> Unit) {
         var node: AccessibilityNodeInfo? = node(n, named)
         while (node != null && !node.isLongClickable) node = node.parent
-        if (node?.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK) != true) {
-            val r = Rect().also(node(n)::getBoundsInScreen)
-            press(r.exactCenterX(), r.exactCenterY())
-        }
+        if (node?.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK) != true) centre(n).let { (x, y) -> press(x, y) }
     }
 
-    /** The centre of element [n], for a gesture accessibility has no action for (a double tap). */
-    fun center(n: Int, named: String): Pair<Float, Float> {
-        val r = Rect().also(node(n, named)::getBoundsInScreen)
+    /** The centre of element [n] if it's still the one [named], for a gesture accessibility has no action for (a double tap). */
+    fun center(n: Int, named: String): Pair<Float, Float> { node(n, named); return centre(n) }
+
+    /** The centre of element [n]'s part on screen, to touch it. */
+    private fun centre(n: Int): Pair<Float, Float> {
+        val r = Rect().also(node(n)::getBoundsInScreen)
+        check(!r.isEmpty) { "element $n is off the screen: bring it on first (phone find, or phone scroll)" }
         return r.exactCenterX() to r.exactCenterY()
     }
 
@@ -213,6 +283,7 @@ class PhoneAccessibility : AccessibilityService() {
         val out = StringBuilder()
         var screens = 0
         var atEnd = false
+        var empty = 0   // screens in a row that added nothing
         while (screens < pages) {
             ui(displayId)   // refreshes what's on screen; the lines below come from it
             val app = nodes.firstOrNull()?.packageName?.toString().orEmpty()
@@ -227,13 +298,15 @@ class PhoneAccessibility : AccessibilityService() {
             screens++
             var added = 0
             for (node in nodes) {
-                val label = label(node)
+                val label = label(node, 300)   // reading: more of a long message than phone ui shows
                 if (label.isEmpty()) continue
                 val line = clean(node.className).substringAfterLast('.') + " \"" + label + "\""
                 if (readSeen.add(line)) { out.append(line).append('\n'); added++ }
             }
-            // Nothing new on a screen we scrolled to: the list has stopped moving.
-            if (screens > 1 && added == 0 || screens < pages && !scrollMain(displayId, forward = true)) { atEnd = true; break }
+            // Two scrolled-to screens in a row with nothing new: the list has stopped moving. One alone
+            // may just repeat lines read before ("Reply" under every comment, say).
+            empty = if (screens > 1 && added == 0) empty + 1 else 0
+            if (empty == 2 || screens < pages && !scrollMain(displayId, forward = true)) { atEnd = true; break }
         }
         val read = if (screens == 1) "1 screen" else "$screens screens"
         out.append(if (atEnd) "(read $read; the end of the list)\n" else "(read $read; more below: phone read goes on)\n")
@@ -267,7 +340,8 @@ class PhoneAccessibility : AccessibilityService() {
     /**
      * Pages the screen's main list forward or back, and waits for it to settle. The main list is
      * the largest scrollable element with no other inside it (an outer one often barely moves, a
-     * collapsing header, say), then the others. Returns false when none moves: the end of the list.
+     * collapsing header, say), then the others; ones that only scroll sideways (carousels, pagers)
+     * come last. Returns false when none moves: the end of the list.
      */
     private fun scrollMain(displayId: Int, forward: Boolean): Boolean {
         val bounds = { node: AccessibilityNodeInfo -> Rect().also(node::getBoundsInScreen) }
@@ -276,8 +350,9 @@ class PhoneAccessibility : AccessibilityService() {
         val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
         val vertical = if (forward) AccessibilityAction.ACTION_SCROLL_DOWN else AccessibilityAction.ACTION_SCROLL_UP
         var before: String? = ui(displayId)
-        for (list in lists.sortedWith(compareBy(outer).thenByDescending { bounds(it).width() * bounds(it).height() })) {
-            if (!list.refresh() || !list.performAction(action) && !list.performAction(vertical.id)) continue
+        for (list in lists.sortedWith(compareBy(::sideways).thenBy(outer).thenByDescending { bounds(it).width() * bounds(it).height() })) {
+            // Down (or up) before forward, which can be sideways in a list that scrolls both ways.
+            if (!list.refresh() || !list.performAction(vertical.id) && !list.performAction(action)) continue
             // Settled: the same listing twice running, or 1.5 s (animations that never stop).
             val end = SystemClock.uptimeMillis() + 1500
             var last: String? = null
@@ -325,6 +400,7 @@ class PhoneAccessibility : AccessibilityService() {
     }
 
     companion object {
+        private const val NOTHING = "(nothing on the phone screen yet)\n"
         private const val MAX_ELEMENTS = 300
         private const val MAX_LEVELS = 48   // nesting, as Android's own accessibility tools bound it
         private val CONTROL = Regex("[\\p{Cc}\\p{Cf}\\u2028\\u2029]")   // controls, invisible formatting (bidi), line breaks
