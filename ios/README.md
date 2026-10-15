@@ -107,10 +107,28 @@ Lite in the background. So:
    whether to allow "Cinder Lite": tap **Allow** within about a minute (once; again only if iCTRL
    forgets the key, after 30 days unused or a reinstall). Then Claude opens apps and works through
    them with `phone ui` (the on-screen elements, numbered), `phone click N 'name'`,
-   `phone type N 'name' 'text'`, `phone scroll`, `phone key back|enter|home`, and `phone shot` when
-   it needs to see the screen. `phone help` lists everything.
+   `phone type N 'name' 'text'`, `phone scroll`, `phone hold` (long-press), `phone doubletap`,
+   `phone find 'text'` (scroll to it), `phone read` (a long list's text, several screens at a time),
+   `phone key back`, `phone link URL` (links and apps' own URL schemes, not `tel:`, `sms:`,
+   `facetime:` or iCTRL's own), `phone close <app>`, `phone apps` (only those opened through iCTRL
+   so far: iOS won't let it list them all), `phone info`, and `phone shot` when it needs to see the
+   screen. These are the same commands as on Android, with the same output. `phone help` lists
+   everything.
 4. Don't use the phone while Claude does. When it's done, `phone stop` brings Cinder Lite back to
    the front with its answer.
+
+A few things only iCTRL can do, and `phone help` lists them in an iOS-only section:
+
+- **Reading what the accessibility tree can't.** Web pages, games and long feeds often have no elements
+  to list. `phone ui` then lists the text iCTRL reads from the screen's pixels (on-device OCR, with
+  where each piece is), and `phone ocr` does that for any screen.
+- **The home screen:** `phone key home`.
+- **The runner itself:** `phone logs [text]` (what iCTRL did, and whether an action that timed out landed;
+  `-f` to follow it from the Shell tab), `phone reset` when it stops responding, `phone lock`,
+  and `phone stop runner`, which also stops the runner when Claude is done.
+
+Taps on a listed element go through iCTRL's element lookup when it finds the same element in the
+same place, so they land even while the screen animates; otherwise they tap its centre.
 
 `phone` talks to the runner on `127.0.0.1:8200` with iCTRL's protocol v1 (each request sealed and
 authenticated with the key from that pairing, kept in `/root/.cinder/ictrl.json`, readable by root
@@ -131,7 +149,7 @@ The same as Android's:
 - **Claude confirms first** before sending messages, buying, installing, granting permissions,
   changing security settings or entering passwords or codes.
 - iCTRL's runner can do anything you can do on the screen. Only start it when you want Claude to use
-  the phone, and stop it in the iCTRL app afterwards.
+  the phone, and stop it afterwards: in the iCTRL app, or ask Claude to `phone stop runner`.
 
 ## Building
 

@@ -5,21 +5,35 @@
 # Cinder Lite does the work: every command but help goes straight to it through rish.
 usage() {
   cat <<'USAGE'
-phone start [landscape]         open the phone screen (a picture-in-picture window); landscape
-                                for apps that only run that way (switching closes the open apps)
+phone start                     open the phone screen (a picture-in-picture window)
 phone stop                      close it, and the apps on it
 phone ui                        list the on-screen elements, numbered, with text and bounds
 phone shot [file]               screenshot (default /tmp/phone.png); prints the path
 phone setup                     open Android's Accessibility settings to allow ui and the element actions
+phone apps [name]               the apps there are to open, by name and package
+phone info                      the phone, its phone screen in pixels, whether it's asleep, whether
+                                Accessibility is on
 Actions, which then list the screen they lead to (as phone ui does, when Accessibility is on):
-phone open <package>            launch an app on it
-phone click N 'name'            click element N; name it as phone ui does (part is enough)
+phone open <app>                launch an app: its package (com.android.settings) or its name
+phone close <app>               close an app (package or name) and its screens
+phone link URL                  open a link, or an app's own URL scheme (not tel:, sms: or mms:)
+phone click N 'name'            tap element N; name it as phone ui does (part is enough)
 phone type N 'name' 'text'      replace the text in field N
 phone scroll N up|down|left|right
+phone hold N 'name'             long-press element N (a context menu, say)
+phone doubletap N 'name'        double-tap element N
+phone find 'text'               scroll until an element named that is on screen (both ways)
+phone read [pages] [fresh]      read a long list: its text, a screen at a time (4, at most 9),
+                                only lines not read before, so reading again goes on; fresh restarts
 phone tap X Y                   tap at display pixels
 phone swipe X1 Y1 X2 Y2 [ms]
 phone text 'text'               type into the focused field
-phone key NAME                  press a key: back, enter, tab, del, or any KEYCODE_ name
+phone key NAME                  press a key: back, enter, tab, del, space, or a letter or digit
+On Android only:
+phone start landscape           a landscape phone screen, for apps that only run that way
+                                (switching closes the open apps)
+phone key NAME                  any other key an app handles, by its KEYCODE_ name: escape,
+                                dpad_up, page_down, move_end…
 USAGE
 }
 

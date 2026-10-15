@@ -351,23 +351,33 @@ the Android version"* and Claude uses the `phone` command:
 ```sh
 phone start                  # open the phone screen (the PiP window); `phone start landscape` for
                              # apps that only run in landscape, which otherwise show in a strip
-phone open com.android.settings
+phone open Settings           # by name, or its package (com.android.settings); phone apps lists them
 phone ui                     # the on-screen elements, numbered, with text and bounds
 phone click 15 'About phone' # click element 15, named as phone ui lists it
 phone type 9 'Search' 'wifi' # put text into field 9 (no keyboard involved)
 phone scroll 10 down
+phone hold 7 'Photo'         # long-press (a context menu); phone doubletap 7 'Photo' double-taps
+phone find 'Battery'         # scroll until it's on screen, down then up
+phone read                   # a long list's text, 4 screens at a time; again reads on
 phone shot                   # screenshot to /tmp/phone.png, for when the list isn't enough
 phone tap 300 147            # …and coordinates in that screenshot's pixels
 phone key back
+phone link https://example.com   # a link, or an app's own URL scheme, on the phone screen
+phone close Settings
+phone info                   # the phone screen's size, whether it's asleep, whether Accessibility is on
 phone stop                   # close it, and the apps on it
 ```
 
-Each action (`open`, `click`, `type`, `scroll`, `tap`, `swipe`, `text`, `key`) waits for the screen to
+Each action (`open`, `close`, `link`, `click`, `type`, `scroll`, `hold`, `doubletap`, `find`, `read`, `tap`, `swipe`, `text`, `key`) waits for the screen to
 settle and then lists it the way `phone ui` does (when Accessibility is on, below), so every step
 shows Claude its result. `click` and `type` name their element, so their approval prompts say what Claude
 is acting on. An element that has changed since, or sits behind a dialog or popup, is refused and
 the current screen listed instead. Password fields are flagged and their text is never listed, and
 a very long screen is cut off with a note to scroll.
+
+These are the same commands as on iOS ([ios/README.md](../ios/README.md)), with the same output.
+`phone help` lists the few that only Android has: `phone start landscape`, and keys beyond back,
+enter, tab, del, space, letters and digits.
 
 `phone ui` reads the screen through Android's accessibility API, the same way a screen reader does,
 so Claude works from real buttons and text fields rather than guessing from pictures. For that, turn

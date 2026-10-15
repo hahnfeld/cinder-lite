@@ -264,7 +264,9 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
          * whichever display they're sent to.
          */
         fun keyCode(name: String): Int {
-            val code = KeyEvent.keyCodeFromString(name.uppercase())
+            // A digit is that key, not the key code it would parse as.
+            val code = name.singleOrNull()?.digitToIntOrNull()?.let { KeyEvent.KEYCODE_0 + it }
+                ?: KeyEvent.keyCodeFromString(name.uppercase())
             require(code != KeyEvent.KEYCODE_UNKNOWN) { "unknown key '$name'" }
             require(code in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 || code in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
                 code in APP_KEYS) { "phone key only sends keys an app handles, not '$name'" }

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -210,10 +211,10 @@ object ShizukuBridge {
     }
 
     /**
-     * A phone screen operation: `phone start|stop|shot|setup|ui`, or an action, which then prints the
-     * screen it leads to: `click|type|scroll` through [PhoneAccessibility], `tap|swipe|key|text` as
-     * input events, `open` an app. Output goes to [out], the client's stdout. Arguments are checked
-     * before anything waits.
+     * A phone screen operation: `phone start|stop|shot|setup|ui|apps|info`, or an action, which then
+     * prints the screen it leads to: `click|type|scroll|hold|find|read` through [PhoneAccessibility],
+     * `tap|swipe|key|text|doubletap` as input events, `open|close|link` through the shell. Output goes
+     * to [out], the client's stdout. Arguments are checked before anything waits.
      */
     private fun phone(ctx: Context, op: JSONArray, out: FileOutputStream) {
         fun arg(i: Int) = op.optString(i).ifEmpty { error("missing an argument; see: phone help") }
@@ -276,12 +277,41 @@ object ShizukuBridge {
                     "Android says it's a restricted setting: App info → ⋮ → Allow restricted settings, then try again.\n")
             }
             "ui" -> { val id = screen().displayId; print(a11y().ui(id)) }
+            "apps" -> print(apps(ctx, op.optString(1)).joinToString("") { (label, pkg) -> "$label ($pkg)\n" }.ifEmpty { "(none found)\n" })
+            "info" -> {
+                val screen = live()
+                print("${Build.MANUFACTURER} ${Build.MODEL}: Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
+                    (screen?.spec?.let { "phone screen: ${it.width}x${it.height} pixels, ${it.dpi} dpi${if (it.landscape) ", landscape" else ""}\n" }
+                        ?: "phone screen: not open (phone start opens it)\n") +
+                    (screen?.let { if (it.stopped) "asleep: phone control stops working until the phone's screen is back on\n"
+                        else "awake: phone control works\n" } ?: "") +
+                    "Accessibility: ${if (PhoneAccessibility.instance != null) "on" else "off (phone setup)"}\n")
+            }
             "click" -> { val n = number(1).toInt(); val named = arg(2); act { a11y().click(n, named) } }
             "type" -> {
                 val n = number(1).toInt(); val named = arg(2); val text = op.optString(3)
                 act { a11y().type(n, named, text) }
             }
             "scroll" -> { val n = number(1).toInt(); val direction = arg(2); act { a11y().scroll(n, direction) } }
+            "hold" -> {
+                val n = number(1).toInt(); val named = arg(2)
+                act { s -> a11y().hold(n, named) { x, y -> s.swipe(x, y, x, y, 800) } }
+            }
+            "doubletap" -> {
+                val n = number(1).toInt(); val named = arg(2)
+                act { s -> val (x, y) = a11y().center(n, named); s.tap(x, y); Thread.sleep(80); s.tap(x, y) }
+            }
+            "read" -> {
+                val words = (1 until op.length()).map(op::optString)
+                val fresh = "fresh" in words
+                val pages = words.firstOrNull { it != "fresh" }?.let { (it.toIntOrNull() ?: error("phone read [pages] [fresh]")).coerceIn(1, 9) } ?: 4
+                act { print(a11y().read(it.displayId, pages, fresh)) }
+            }
+            "find" -> {
+                val text = arg(1)
+                act { a11y().find(it.displayId, text) }
+                a11y().match(text)?.let { print("found: element $it\n") }
+            }
             "tap" -> { val x = number(1); val y = number(2); act { it.tap(x, y) } }
             "swipe" -> {
                 val (x1, y1, x2, y2) = (1..4).map(::number)
@@ -290,7 +320,19 @@ object ShizukuBridge {
             }
             "key" -> { val code = PhoneScreenActivity.keyCode(arg(1)); act { it.key(code) } }
             "text" -> { val text = arg(1); act { it.text(text) } }
-            "open" -> { val pkg = arg(1); act(quiet = 600, longest = 5000) { open(ctx, it.displayId, pkg) } }
+            "open" -> { val pkg = packageFor(ctx, arg(1)); act(quiet = 600, longest = 5000) { open(ctx, it.displayId, pkg) } }
+            "close" -> { val pkg = packageFor(ctx, arg(1)); act { close(ctx, it.displayId, pkg) } }
+            "link" -> {
+                val url = arg(1)
+                val scheme = SCHEME.find(url)?.groupValues?.get(1)?.lowercase() ?: error("'$url' isn't a URL (it needs a scheme, like https:)")
+                check(scheme !in BLOCKED_SCHEMES) { "phone link doesn't open $scheme: links (calls, texts); ask the user to do that, or go through the app" }
+                // It goes into a shell command, in single quotes.
+                check(url.none { it == '\'' || it == '\\' || it.isWhitespace() || it.isISOControl() }) { "encode spaces and quotes in the URL (%20, %27)" }
+                act(quiet = 600, longest = 5000) { s ->
+                    val output = sh(ctx, "am start --display ${s.displayId} -a android.intent.action.VIEW -d '$url'")
+                    check(output.lines().none { it.startsWith("Error") }) { output.trim() }
+                }
+            }
             else -> error("unknown phone operation '${op.optString(0)}'; see: phone help")
         }
     }
@@ -299,6 +341,10 @@ object ShizukuBridge {
     private fun socketFile(ctx: Context) = File(ctx.filesDir, "libexec/rish.sock")
 
     private val COMPONENT = Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+")
+    private val SCHEME = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
+    private val BLOCKED_SCHEMES = setOf("tel", "sms", "smsto", "mms", "mmsto", "voicemail")
+    private val ROOT_TASK = Regex("^[A-Za-z]* id=([0-9]+) .* displayId=([0-9]+) ")
+    private val TASK = Regex("taskId=[0-9]+: ([A-Za-z0-9_.]+)/")
 
     /** A failure for the client to show. Shizuku dying mid-call has no message of its own. */
     private fun why(e: Exception) = if (e is RemoteException) "lost the Shizuku service" else e.message ?: e.toString()
@@ -321,9 +367,39 @@ object ShizukuBridge {
         // The component goes into a shell command, and an app's manifest names its own activities.
         val component = ctx.packageManager.getLaunchIntentForPackage(pkg)?.component?.flattenToShortString()
             ?.takeIf(COMPONENT::matches)
-            ?: error("no app to open for '$pkg' (list packages with: rish -c 'pm list packages')")
+            ?: error("no app to open for '$pkg' (phone apps lists them)")
         val output = sh(ctx, "am start --display $displayId -n '$component'")
         check(output.lines().none { it.startsWith("Error") }) { output.trim() }
+    }
+
+    /** The apps with a launcher icon, as (name, package), sorted by name; those whose either contains [name]. */
+    private fun apps(ctx: Context, name: String = ""): List<Pair<String, String>> {
+        val pm = ctx.packageManager
+        return pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .map { it.loadLabel(pm).toString().filterNot(Char::isISOControl) to it.activityInfo.packageName }
+            .filter { (label, pkg) -> label.contains(name, true) || pkg.contains(name, true) }
+            .distinct()
+            .sortedBy { it.first.lowercase() }
+    }
+
+    /** An app's package, from the package itself or the app's name (exactly, else a part of it). */
+    private fun packageFor(ctx: Context, target: String): String {
+        if (ctx.packageManager.getLaunchIntentForPackage(target) != null) return target
+        val apps = apps(ctx)
+        return (apps.firstOrNull { it.first.equals(target, true) } ?: apps.firstOrNull { it.first.contains(target, true) })
+            ?.second ?: error("no app found for '$target' (phone apps lists them)")
+    }
+
+    /** Closes [pkg] on the phone screen: removes its tasks there, as swiping it away in Recents does. */
+    private fun close(ctx: Context, displayId: Int, pkg: String) {
+        var root: String? = null   // the root task being listed, if it's on the phone screen
+        val ids = sh(ctx, "am stack list").lines().mapNotNull { line ->
+            val task = ROOT_TASK.find(line)
+            if (task != null) { root = task.groupValues[1].takeIf { task.groupValues[2] == "$displayId" }; null }
+            else root?.takeIf { TASK.find(line)?.groupValues?.get(1) == pkg }
+        }.distinct()
+        check(ids.isNotEmpty()) { "$pkg isn't open on the phone screen" }
+        ids.forEach { sh(ctx, "am stack remove $it") }
     }
 
     /** Runs [command] as the shell user; returns its output, stdout and stderr together. */
