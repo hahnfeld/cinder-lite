@@ -28,7 +28,7 @@ more for the optional Shizuku features) and a ~4.5 MB APK.
 It installs as `app.cinderlite`, so it can sit alongside the original.
 
 > Unofficial and unaffiliated with Anthropic. Sideload only. arm64-v8a, Android 11+.
-> This is the Android app; the iOS port lives in [`../ios`](../ios).
+> This is the Android app. An iOS port is in progress and will live in `../ios`.
 
 <br>
 
