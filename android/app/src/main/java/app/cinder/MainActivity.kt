@@ -484,7 +484,12 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         // An explicit socket path (one per process, like its default) skips that check.
         // --settings adds the hooks that turn Claude's notifications into phone notifications
         // (assets/claude-settings.json), without touching the user's own settings files.
-        private const val CLAUDE =
+        // Claude Code's own update check is off (Sandbox's prelude), so it updates here: once a day, a
+        // minute after starting, in its own session so it outlives this one. The iOS app does the same.
+        private const val UPDATE =
+            "s=/root/.cache/cinder-update; [ -n \"\$(find \$s -mtime -1 2>/dev/null)\" ] || { mkdir -p /root/.cache && : > \$s; " +
+                "setsid sh -c 'sleep 60; exec /root/.local/bin/claude update' </dev/null >\$s.log 2>&1 & }; "
+        private const val CLAUDE = UPDATE +
             "mkdir -p -m 700 /tmp/cc-socks && exec /root/.local/bin/claude --messaging-socket-path /tmp/cc-socks/\$\$.sock " +
                 "--settings /usr/local/libexec/cinder-settings.json --append-system-prompt \"\$(cat /usr/local/libexec/cinder-brief.md)\""
         // Not a login shell: Alpine's /etc/profile would reset PATH and drop the sandbox's tools.

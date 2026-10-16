@@ -14,7 +14,8 @@ Cinder Lite is a **front-end**. It does not contain, copy, or reimplement Claude
 it says that Claude Code is Anthropic's software, distributed separately under its own license, and
 waits for you to press Enter. Only then does it download npm's current `linux-arm64-musl` build of
 Claude Code, the one `npm install` would fetch on a laptop, and check it against the sha512 npm
-publishes. Claude Code's own `claude install` then sets it up, and from then on it updates itself.
+publishes. Claude Code's own `claude install` then sets it up, and from then on Cinder Lite runs
+`claude update` once a day, in the background.
 You sign in with **your own** Anthropic account through the CLI's own `/login`.
 
 iOS doesn't let an app run Linux programs natively, or generate code at runtime (no JIT outside the
@@ -24,7 +25,7 @@ difference from Android:
 
 | | Android | iOS |
 |---|---|---|
-| Sandbox | Alpine under proot, native speed | Alpine in iSH-AOK's emulator: in testing, a Claude turn took about 2–2.5× as long once running, and startup ~7 s |
+| Sandbox | Alpine under proot, native speed | Alpine in iSH-AOK's emulator: in testing (Simulator), a one-line `claude -p` took 5.3 s against 4.5 s natively, a short task with tools ~9–10 s, and Claude was ready ~5 s after launch |
 | In the background | a foreground service keeps it going | iOS suspends apps; ⋮ → Keep running in background keeps it going (below) |
 | `phone` | a separate virtual screen in picture-in-picture, through Shizuku | your real screen, through the iCTRL runner |
 | Shell access to the phone | `rish` / `adb shell` | none: iOS has no equivalent |

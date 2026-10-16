@@ -10,5 +10,12 @@ done
 cd /workspace
 # This session started before setup installed bash; Claude Code's Bash tool should get it anyway.
 [ -x /bin/bash ] && export SHELL=/bin/bash
+# Claude Code's own update check is off (it slowed every start in the emulator), so it updates here:
+# once a day, a minute after starting, in its own session so it outlives this one.
+stamp=/root/.cache/cinder-update
+if [ -z "$(find $stamp -mtime -1 2>/dev/null)" ]; then
+  mkdir -p /root/.cache && : > $stamp
+  setsid sh -c 'sleep 60; exec /root/.local/bin/claude update' </dev/null >$stamp.log 2>&1 &
+fi
 exec /root/.local/bin/claude --settings /usr/local/libexec/cinder-settings.json \
   --append-system-prompt "$(cat /usr/local/libexec/cinder-brief.md)"

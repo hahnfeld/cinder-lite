@@ -133,6 +133,12 @@ final class Sandbox {
             "PYTHONUSERBASE=/root/.local",
             // Nothing in here can open a browser; xdg-open hands the URL to iOS (Claude Code's /login).
             "BROWSER=xdg-open",
+            // Claude Code runs on Bun, whose JIT only adds work in an emulator: the code it compiles is
+            // emulated like any other. In testing, a one-line `claude -p` went from ~15 s to ~10 s.
+            "BUN_JSC_useJIT=0",
+            // No telemetry, error reports or update check holding up every start (then ~10 s down to ~5 s);
+            // cinder-claude runs `claude update` once a day instead.
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
         ]
     }
 }

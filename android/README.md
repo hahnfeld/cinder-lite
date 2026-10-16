@@ -39,14 +39,14 @@ binary is Anthropic's, published on the public npm registry, and **the app downl
 from npm**, only after you agree: it first says that Claude Code is distributed separately under
 Anthropic's own license, and waits for a tap. The download is what would install on a laptop; the app
 checks it against the sha512 npm publishes, and lets Claude Code's own `claude install` set it up.
-From then on Claude Code updates itself, as it does on a laptop. You then sign in with **your own** Anthropic account through the CLI's own login.
+From then on Cinder Lite runs `claude update` once a day, in the background. You then sign in with **your own** Anthropic account through the CLI's own login.
 Cinder Lite provides a Linux environment for the binary to run in, and a terminal to show it.
 
 | Layer | What it is |
 |---|---|
 | UI | Termux `terminal-view` showing the `claude` TUI, plus a row of keys phones lack (esc, tab, ⇧tab, ctrl, arrows), a 🎤 voice-typing key and a ⋮ menu |
 | Sandbox | proot + an Alpine Linux 3.24 (musl, aarch64) rootfs, in app-private storage; phone storage at `/sdcard` |
-| Engine | Anthropic's `claude` binary, the latest release — **downloaded at runtime and verified, never bundled**; it updates itself |
+| Engine | Anthropic's `claude` binary, the latest release — **downloaded at runtime and verified, never bundled**; updated daily |
 | Auth | The CLI's own `/login`. Its browser hand-off goes through an `xdg-open` shim that opens the phone's browser |
 
 <br>
@@ -60,7 +60,7 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 | Model, permissions, history | App's own pickers and session store | Claude Code's `/model`, `/permissions`, `/resume` |
 | Shell | One-shot commands on Android's host shell | A real bash in the sandbox, kept alongside Claude |
 | Phone files | Upload/export buttons | Shared storage mounted at `/sdcard` |
-| Claude Code install | Latest from npm, unverified | Latest from npm, sha512-verified, then Claude Code's native install with self-updates |
+| Claude Code install | Latest from npm, unverified | Latest from npm, sha512-verified, then Claude Code's native install, updated daily |
 | Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,500 lines in 4 Kotlin files, plus ~1,100 in 4 for the optional Shizuku features |
 | Release APK | ~33 MB (debug) | ~4.5 MB, signed, R8-shrunk |
 
@@ -463,8 +463,9 @@ hand out debug builds: they're debuggable, so anyone with adb access to the phon
 Claude Code login out of the app's storage.
 
 **Claude Code updates.** Nothing to do in the app: Claude Code lives in its standard native install
-in the sandbox's home (`/root/.local/bin/claude`) and updates itself. `claude update` in the shell
-checks right away; ⋮ → Reinstall sandbox installs the latest release from scratch.
+in the sandbox's home (`/root/.local/bin/claude`). Its own update check slowed every start, so it's
+off, and the Claude tab runs `claude update` in the background once a day instead. `claude update` in
+the shell checks right away; ⋮ → Reinstall sandbox installs the latest release from scratch.
 
 **First run:** allow storage access. The app unpacks the sandbox, then says that Claude Code is
 Anthropic's software under its own license and asks before getting it: tap **Download Claude Code**.
