@@ -435,6 +435,21 @@ switch nothing inside can undo.
 
 <br>
 
+## Known issues
+
+**A stray `u` in the top-left corner when Claude Code starts.** It's cosmetic. Cinder Lite starts
+Claude Code with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which makes starts about 2 s faster
+(2.4–2.9 s against 4.3–4.6 s for a one-line `claude -p` on a Pixel). Starting that quickly,
+Claude Code turns its enhanced keyboard mode off before it has asked the terminal whether it
+supports that mode. Until the terminal answers, Claude Code assumes it might, so the switch-off
+includes kitty's "pop keyboard mode" code, `ESC [ < u`. Termux's terminal (0.118.0) doesn't know
+`ESC [ <` codes: it stops reading at the `<` and prints the `u`. On a slower start Claude Code
+asks first, Termux doesn't answer, and Claude Code leaves that code out. Turning off only
+telemetry, error reports and auto-update (`DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+`DISABLE_AUTOUPDATER`) avoids the `u` but gives back most of the time saved.
+
+<br>
+
 ## Building
 
 Needs JDK 17+, the Android SDK with platform 37 and NDK r30 (`30.0.16248370`, for the small
