@@ -15,6 +15,7 @@ texts are in this directory, and corresponding source for each is at the link gi
 | Termux terminal-view / terminal-emulator | 0.118.0 | Apache-2.0 (`Apache-2.0.txt`) | https://github.com/termux/termux-app/tree/v0.118.0 |
 | `libtermux.so` | built from termux-app v0.118.0 `terminal-emulator/src/main/jni/termux.c`, unmodified | Apache-2.0 (`Apache-2.0.txt`) | `app/src/main/cpp/termux.c` in the Cinder Lite repository |
 | Shizuku API (`dev.rikka.shizuku:api`, `provider`) | 13.1.5 | MIT (`Shizuku-API-LICENSE.txt`) | https://github.com/RikkaApps/Shizuku-API |
+| hev-socks5-tunnel (`libhev-socks5-tunnel.so`, with hev-socks5-core, hev-task-system, yaml and lwIP built in) | 2.19.0 — its release `hev-socks5-tunnel.aar`, unmodified (sha256 `fbbf014c…b4ba02b0`) | MIT; lwIP BSD-3-Clause (`hev-socks5-tunnel-LICENSE.txt`) | https://github.com/heiher/hev-socks5-tunnel/releases/tag/2.19.0 |
 | Kotlin standard library, AndroidX annotation | per build | Apache-2.0 (`Apache-2.0.txt`) | https://github.com/JetBrains/kotlin, https://android.googlesource.com/platform/frameworks/support |
 | Noto Sans Symbols 2 (`fonts/symbols.ttf`) | the terminal's symbol fallback: a subset of `NotoSansSymbols2-Regular.ttf` (arrows, technical symbols, shapes, dingbats; no emoji) | SIL OFL 1.1 (`OFL-1.1-Noto-Sans-Symbols-2.txt`) | https://github.com/notofonts/symbols |
 

@@ -167,9 +167,12 @@ class Sandbox(private val ctx: Context) {
      * What [installBaseTools] puts down, as apk itself records it. Installs from before apk could
      * write its database have the files but no record, and get them installed (recorded) again.
      */
-    val hasBaseTools get() = runCatching {
+    val hasBaseTools get() = installed.containsAll(listOf("P:bash", "P:python3", "P:nodejs", "P:tzdata"))
+    /** mitmproxy, for watching network traffic: installed the first time that's turned on, not at setup. */
+    val hasMitmproxy get() = "P:mitmproxy" in installed
+    private val installed get() = runCatching {
         File(rootfs, "lib/apk/db/installed").useLines { lines -> lines.filter { it.startsWith("P:") }.toSet() }
-    }.getOrDefault(emptySet()).containsAll(listOf("P:bash", "P:python3", "P:nodejs", "P:tzdata"))
+    }.getOrDefault(emptySet())
     /** The base tools' telltale files, recorded or not. */
     private val hasBaseFiles get() = hasBash && listOf("usr/bin/python3", "usr/bin/node").all { File(rootfs, it).exists() }
 
@@ -414,6 +417,7 @@ class Sandbox(private val ctx: Context) {
     private fun writeHelpers() {
         copyAsset("brief.md", File(libexec, "cinder-brief.md"))
         copyAsset("claude-settings.json", File(libexec, "cinder-settings.json"))
+        copyAsset("cinder-traffic.py", File(libexec, "cinder-traffic.py"))   // mitmproxy's add-on (TrafficVpn)
         copyAsset("linkerconfig/ld.config.txt", File(rootfs, "linkerconfig/ld.config.txt"))
         for ((dir, target) in listOf("bin" to bin, "shims" to shims)) {
             for (name in ctx.assets.list("helpers/$dir").orEmpty()) {
@@ -540,6 +544,22 @@ class Sandbox(private val ctx: Context) {
         // Offline, an install whose tools are only missing their record still has them all: carry
         // on, and record them next launch.
         check(hasBaseFiles) { "bash, python3 or node is still missing" }
+    }
+
+    fun installMitmproxy(log: (String) -> Unit) {
+        run("/sbin/apk add --no-cache mitmproxy", asRoot = true, log = log)
+        check(hasMitmproxy) { "mitmproxy didn't install" }
+    }
+
+    /** The certificate mitmproxy signs with: made once, kept with its key in /root/.mitmproxy. */
+    val caCert get() = File(home, ".mitmproxy/mitmproxy-ca-cert.pem")
+
+    /** Makes [caCert] the way mitmproxy would, but named Cinder Lite, so Settings says whose it is. */
+    fun ensureCa(log: (String) -> Unit) {
+        if (caCert.exists()) return
+        run("python3 -c 'import pathlib; from mitmproxy.certs import CertStore; " +
+            "CertStore.create_store(pathlib.Path(\"/root/.mitmproxy\"), \"mitmproxy\", 2048, \"Cinder Lite\", \"Cinder Lite\")'", log = log)
+        check(caCert.exists()) { "couldn't make the certificate" }
     }
 
     /** Deletes [dir] and everything under it without following symlinks out of it. */

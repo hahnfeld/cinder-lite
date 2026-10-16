@@ -114,22 +114,27 @@ the 32-bit proot loader.
   passed with `--settings`; your own Claude settings are untouched
 - **⋮ menu** — switch between Claude and a Shell (bash in the same sandbox; both keep running and
   keep their scrollback) · Restart the one you're looking at · Stop · Autocorrect (on/off) ·
-  Shizuku (on/off; see below) · Reinstall sandbox (a clean reset that keeps your login and
-  `/workspace`)
+  Shizuku (on/off; see below) · Watch network traffic (on/off; see below) · Reinstall sandbox (a
+  clean reset that keeps your login and `/workspace`)
 - **Package management without root** — `apk add`, `npm -g`, `pip install`, plus Android build and
   APK decompile tools
 - **Optional adb-shell access via [Shizuku](https://shizuku.rikka.app/)** — off by default; see
   [below](#adb-shell-access-with-shizuku-optional). It also lets Claude drive apps on a separate
   phone screen in a picture-in-picture window
+- **Watching network traffic** — off by default; what the phone's apps send and receive, HTTPS
+  included where an app allows it, captured by mitmproxy in the sandbox for Claude to read; see
+  [below](#watching-network-traffic-optional)
 
-**Storage:** the APK is ~4.5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
+**Storage:** the APK is ~5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
 is ~240 MB, plus the rootfs and base tools). Installing the Android toolchains adds ~200 MB of the
-device's own libraries plus the tools themselves.
+device's own libraries plus the tools themselves; mitmproxy, the first time you watch network
+traffic, about 50 MB.
 
 **Trust model:** Claude Code and anything it runs can read and write everything under `/sdcard`
 once storage access is granted, and can reach the network. That's the point — but use Claude Code's
 own permission prompts accordingly. With Shizuku on, it also has adb-shell power
-([see below](#be-deliberate-about-turning-it-on)).
+([see below](#be-deliberate-about-turning-it-on)). While you're watching network traffic, it can read
+what your apps send ([see below](#what-claude-sees)).
 
 <br>
 
@@ -432,6 +437,70 @@ built to mislead it.
 Turn it off when you don't need it: ⋮ → **Shizuku** again. Code in the sandbox runs as the app
 itself, so it could turn that switch back on; revoking Cinder Lite in the Shizuku app is the off
 switch nothing inside can undo.
+
+<br>
+
+## Watching network traffic (optional)
+
+⋮ → **Watch network traffic** shows Claude (and you) what the phone's apps send and receive: every
+request, its headers and body, and the response. It's the same thing Reqable, HTTP Toolkit and
+PCAPdroid do, on your own phone and only while you have it on. Ask Claude things like "what does
+this app send when I tap Sync?" or "why does this page load slowly?".
+
+**Turning it on.** The first time:
+
+1. Cinder Lite installs [mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`,
+   about a minute) and makes a certificate for it, named *Cinder Lite*.
+2. To read HTTPS, Android needs you to trust that certificate. Since Android 11 no app can do this
+   for you, or even open the screen for it, so Cinder Lite saves *Cinder Lite certificate.crt* to
+   Downloads and opens Settings: search for **CA certificate**, tap **Install anyway**, and pick the
+   file. Android asks you to set a screen lock first if there isn't one. Back in Cinder Lite it
+   notices the certificate and carries on. **Without HTTPS** skips this: you then see which hosts
+   apps connect to, but not what they send.
+3. Android asks once whether Cinder Lite may set up a VPN.
+
+After that it starts at a tap. While it's on, Android shows a key icon in the status bar and Cinder
+Lite a notification with **Stop**. ⋮ → **Watch network traffic** again, or ⋮ → **Stop**, also
+stops it, as does disconnecting the VPN in Settings.
+
+**What it can read.** HTTPS is readable only from apps that accept certificates you add: Chrome,
+apps you build yourself in debug mode, and apps that opt in. Most other apps refuse such a
+certificate. When one does, Cinder Lite lets that host's connections through untouched from then
+on, so the app keeps working (after one failed connection) and you still see the hostname. Apps that
+pin their certificates refuse it too. There's no way around this without root, and Cinder Lite
+doesn't try.
+
+**While it's on**, calls, some games and anything else using UDP, other than DNS, won't get through:
+mitmproxy's proxy only carries TCP. Browsers fall back from QUIC to ordinary HTTPS on their own.
+
+### What Claude sees
+
+Claude reads the capture with `traffic` (`traffic`, `traffic show N`, `traffic help`):
+
+- It shows passwords, tokens, cookies, API keys and the like as `‹hidden›`: in headers, URLs,
+  forms and JSON. That's a safeguard against them landing in Claude's context, not a wall: the full
+  capture is in the sandbox (`/tmp/cinder-traffic`), which Claude can read. Claude is told to leave
+  that alone unless you ask.
+- `traffic start` (all apps) or `traffic start com.example.app` (only those) lets Claude ask to
+  watch. Cinder Lite then asks you on screen every time, naming the apps (through a notification
+  when it isn't open); nothing starts without your tap, and an ask you leave for two minutes lapses.
+  `traffic stop` needs no one's say-so.
+- `traffic save` writes everything, unredacted, to a HAR file in `/sdcard/Download` that opens in
+  Chrome DevTools, Charles or Reqable.
+
+**When you're done**, remove the certificate: Settings → search **Trusted credentials** → **User** →
+*Cinder Lite* → **Uninstall**. While it's installed, anyone with its key (it stays in the sandbox,
+in `/root/.mitmproxy`) could read the HTTPS of apps that accept it.
+
+### How it works
+
+Android's `VpnService` hands Cinder Lite the packets of the apps being watched (every app but Cinder
+Lite itself, or just the ones Claude named). [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)
+(MIT, about 350 KB in the APK) turns them back into connections and hands them to `mitmdump` in the
+sandbox over SOCKS5 on `127.0.0.1`, with a password made fresh each time so other apps can't use
+it; if something else is already listening on that port, it won't start. DNS is answered inside the tunnel, so mitmproxy sees hostnames rather than addresses. Cinder
+Lite's own traffic, mitmproxy's included, stays outside the VPN. If mitmproxy exits, the VPN goes
+down with it, so the phone is never left offline; if the app is killed, Android drops the VPN.
 
 <br>
 

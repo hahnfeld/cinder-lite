@@ -12,9 +12,11 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.fonts.Font
 import android.graphics.fonts.FontFamily
+import android.net.VpnService
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.util.TypedValue
@@ -117,6 +119,12 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 requestPermissions(arrayOf(STORAGE), 1)   // boots from onRequestPermissionsResult
             else -> boot()
         }
+        askToWatch(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        askToWatch(intent)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -128,6 +136,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         visible = true
         // Back in the app: Claude's alert has done its job.
         SessionService.clearAlert(this)
+        // Back from Settings, where the user may have trusted the certificate.
+        pendingWatch?.let { pendingWatch = null; trust(it) }
     }
 
     override fun onPause() {
@@ -273,6 +283,11 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             }
         menu.add("Shizuku").setCheckable(true).setChecked(ShizukuBridge.isEnabled(this@MainActivity))
             .setOnMenuItemClickListener { toggleShizuku(); true }
+        menu.add("Watch network traffic").setCheckable(true).setChecked(TrafficVpn.running)
+            .setOnMenuItemClickListener {
+                if (TrafficVpn.running) TrafficVpn.stop(this@MainActivity) else watch(emptyList())
+                true
+            }
         menu.add("Reinstall sandbox").setOnMenuItemClickListener {
             if (!busy.get()) { finishAll(); boot(reset = true) }
             true
@@ -329,6 +344,113 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             .show()
     }
 
+    // ---------------- watching network traffic ----------------
+
+    /**
+     * Claude's `traffic start`, by way of SessionService: the user decides, every time, and only
+     * while Claude is still waiting for the answer ([ASK_MS]); a late yes starts nothing.
+     */
+    private fun askToWatch(intent: Intent?) {
+        val apps = intent?.getStringArrayExtra(WATCH)?.toList() ?: return
+        intent.removeExtra(WATCH)
+        val asked = intent.getLongExtra(ASKED, 0)
+        fun lapsed() = System.currentTimeMillis() - asked > ASK_MS
+        if (TrafficVpn.running || isFinishing) return
+        if (lapsed()) {
+            toast(this, "Claude's request to watch network traffic has expired")
+            return
+        }
+        // Only apps that can run: watching a turned-off one (Chrome, on a phone that browses with
+        // Chrome Beta) would show nothing at all.
+        val installed = apps.filter { runCatching { packageManager.getApplicationInfo(it, 0).enabled }.getOrDefault(false) }
+        if (apps.isNotEmpty() && installed.isEmpty()) {
+            toast(this, "Claude asked to watch apps that aren't on this phone or are turned off: ${apps.joinToString()}")
+            TrafficVpn.answer(this, "failed: none of those apps is on this phone and turned on (phone apps lists them)")
+            return
+        }
+        val what = if (installed.isEmpty()) "every app" else installed.joinToString {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(it, 0)).toString()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Watch network traffic?")
+            .setMessage("Claude wants to see what $what on this phone sends and receives over the network, " +
+                "until you stop it (Stop in its notification). Passwords, tokens and cookies stay hidden from Claude.")
+            .setPositiveButton("Watch") { _, _ ->
+                if (lapsed()) toast(this, "Claude's request to watch network traffic has expired")
+                else {
+                    TrafficVpn.answer(this, "accepted")
+                    watch(installed)
+                }
+            }
+            .setNegativeButton("Don't") { _, _ -> TrafficVpn.answer(this, "declined") }
+            .setOnCancelListener { TrafficVpn.answer(this, "declined") }
+            .show()
+    }
+
+    /**
+     * ⋮ → Watch network traffic, or the user's yes to Claude: mitmproxy the first time, then the
+     * certificate ([trust]), then Android's VPN consent ([consent]); [TrafficVpn] does the rest.
+     */
+    private fun watch(apps: List<String>) {
+        if (busy.get() || !preparing.compareAndSet(false, true)) return
+        val sandbox = sandbox
+        val app = applicationContext
+        thread {
+            try {
+                if (!sandbox.hasMitmproxy) {
+                    toast(app, "Getting mitmproxy to watch traffic with (once, about a minute)…")
+                    sandbox.installMitmproxy { Log.i(TAG, it) }
+                }
+                sandbox.ensureCa { Log.i(TAG, it) }
+                main.post { ui?.trust(apps) }
+            } catch (e: Exception) {
+                Log.e(TAG, "can't watch traffic", e)
+                toast(app, "Couldn't set up watching: ${e.message}")
+                TrafficVpn.answer(app, "failed: ${e.message}")
+            } finally {
+                preparing.set(false)
+            }
+        }
+    }
+
+    /**
+     * HTTPS is readable only once the user trusts Cinder Lite's certificate in Settings: since
+     * Android 11 no app can install one or open that screen, so the certificate waits in Downloads.
+     */
+    private fun trust(apps: List<String>) {
+        val cert = sandbox.caCert
+        if (TrafficVpn.trusted(cert)) return consent(apps, decrypt = true)
+        runCatching { TrafficVpn.saveToDownloads(this, cert) }
+            .onFailure { Log.e(TAG, "can't save the certificate", it); return consent(apps, decrypt = false) }
+        AlertDialog.Builder(this)
+            .setTitle("Read HTTPS too?")
+            .setMessage("To read what apps send over HTTPS, Android needs you to trust Cinder Lite's certificate, once:\n\n" +
+                "1. Tap Open Settings and search for \"CA certificate\"\n" +
+                "2. Tap it, then Install anyway\n" +
+                "3. Pick \"${TrafficVpn.CERT_NAME}\" in Downloads, then come back here\n\n" +
+                "Android asks for a screen lock first if the phone has none. Only apps that accept certificates " +
+                "you add (Chrome, apps you build) can be read; for the rest you see which hosts they reach.\n\n" +
+                "Remove it when you're done: Settings → Trusted credentials → User.")
+            .setPositiveButton("Open Settings") { _, _ ->
+                pendingWatch = apps
+                runCatching { startActivity(Intent(SETTINGS_SEARCH)) }
+                    .recoverCatching { startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) }
+            }
+            .setNeutralButton("Without HTTPS") { _, _ -> consent(apps, decrypt = false) }
+            .setNegativeButton("Cancel") { _, _ -> TrafficVpn.answer(this, "declined") }
+            .setOnCancelListener { TrafficVpn.answer(this, "declined") }
+            .show()
+    }
+
+    /** Android's own VPN consent, the first time only; then [TrafficVpn] starts. */
+    private fun consent(apps: List<String>, decrypt: Boolean) {
+        val flag = File(sandbox.tmp, "cinder-traffic/decrypt").apply { parentFile?.mkdirs() }
+        if (decrypt) flag.writeText("") else flag.delete()
+        val ask = VpnService.prepare(this) ?: return TrafficVpn.start(this, apps)
+        pendingVpn = apps
+        startActivityForResult(ask, VPN)
+    }
+
     /**
      * Voice typing through the phone's own speech recognizer (no microphone permission here; the
      * recognizer app handles that). What it hears is pasted into the terminal that's showing.
@@ -342,6 +464,11 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == VPN) {
+            if (resultCode == RESULT_OK) pendingVpn?.let { TrafficVpn.start(this, it) } else TrafficVpn.answer(this, "declined")
+            pendingVpn = null
+            return
+        }
         if (requestCode != VOICE || resultCode != RESULT_OK) return
         val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return
         autocorrect?.forget()
@@ -479,6 +606,13 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         private const val TAG = "cinder"
         private const val STORAGE = Manifest.permission.WRITE_EXTERNAL_STORAGE
         private const val VOICE = 2
+        private const val VPN = 3
+        /** SessionService's ask to watch traffic for Claude: the package names, or none for every app. */
+        const val WATCH = "app.cinder.WATCH"
+        /** When Claude asked; the ask lapses after [ASK_MS], as long as `traffic start` waits for it. */
+        const val ASKED = "app.cinder.ASKED"
+        const val ASK_MS = 120_000L
+        private const val SETTINGS_SEARCH = "com.android.settings.action.SETTINGS_SEARCH"
         // Claude Code can't verify who owns its default messaging-socket directory under proot (its
         // uid reads as the kernel overflow uid), so it turns cross-session messaging off and warns.
         // An explicit socket path (one per process, like its default) skips that check.
@@ -516,6 +650,10 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
         private val main = Handler(Looper.getMainLooper())
         private val busy = AtomicBoolean(false)
+        private val preparing = AtomicBoolean(false)   // watch(): installing mitmproxy, making the certificate
+        // What's to be watched while the user is in Settings (the certificate) or Android's VPN consent.
+        private var pendingWatch: List<String>? = null
+        private var pendingVpn: List<String>? = null
         private val setupLog = StringBuilder()
         /** Set while setup waits for the user to agree to Claude Code's download; touched on main only. */
         private var consent: CountDownLatch? = null
@@ -532,6 +670,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
         /** Whether the app is on screen; Claude's alerts only become phone notifications when not. */
         @Volatile var visible = false
+
+        private fun toast(ctx: Context, text: String) = main.post { Toast.makeText(ctx, text, Toast.LENGTH_LONG).show() }
 
         private fun tabOf(s: TerminalSession) = sessions.entries.find { it.value === s }?.key
         private fun finishAll() = sessions.values.forEach { it.finishIfRunning() }
@@ -588,12 +728,13 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         }
 
         /**
-         * Ends both sessions, the phone screen, the keep-alive service and the app: ⋮ → Stop, or the
-         * notification's Stop.
+         * Ends both sessions, the phone screen, watching traffic, the keep-alive service and the app:
+         * ⋮ → Stop, or the notification's Stop.
          */
         fun stop(ctx: Context) {
             main.post {
                 finishAll()
+                TrafficVpn.stop(ctx)
                 PhoneScreenActivity.current?.close()
                 SessionService.stop(ctx)
                 ui?.finishAndRemoveTask()

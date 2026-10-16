@@ -35,7 +35,7 @@ import kotlin.concurrent.thread
  *
  * It also handles the requests the sandbox's helper scripts leave in home/.cinder while sessions
  * run: xdg-open's URLs (OAuth login) and files, termux-install's ask for the full set of Android libraries,
- * and Claude Code's own notifications (from the hooks in assets/claude-settings.json), which become phone
+ * traffic's start and stop, and Claude Code's own notifications (from the hooks in assets/claude-settings.json), which become phone
  * notifications while the app isn't on screen. One watcher for all three: Android delivers a
  * directory's events to only one FileObserver per process.
  */
@@ -53,6 +53,7 @@ class SessionService : Service() {
                 when (path) {
                     "open-request" -> take(File(dir, path)).trim().let { if (it.startsWith("/")) openFile(it) else openUrl(it) }
                     "notify-request" -> runCatching { JSONObject(take(File(dir, path))) }.getOrNull()?.let(::onHook)
+                    "traffic-request" -> onTraffic(take(File(dir, path)).trim().split(Regex("\\s+")))
                     "stage-request" -> {
                         File(dir, path).delete()
                         thread {
@@ -64,6 +65,7 @@ class SessionService : Service() {
             }
         }.apply { startWatching() }
         ShizukuBridge.start(this)   // no-op unless turned on in ⋮ → Shizuku
+        TrafficVpn.forgetStale(this)
     }
 
     /**
@@ -108,6 +110,47 @@ class SessionService : Service() {
             return
         }
         runCatching { startActivity(Intent.createChooser(view, "Open ${file.name} with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
+
+    /**
+     * Claude's `traffic start [app…]` and `traffic stop`. Stopping needs no one's say-so; starting is
+     * always the user's call, on screen (MainActivity's dialog), through a notification when the
+     * app isn't showing. The ask lapses after [MainActivity.ASK_MS], when the helper stops waiting.
+     */
+    private fun onTraffic(words: List<String>) {
+        when (words.first()) {
+            "stop" -> TrafficVpn.stop(this)
+            "start" -> {
+                val apps = words.drop(1).filter { it.matches(PACKAGE) }.take(20)
+                val ask = Intent(this, MainActivity::class.java).putExtra(MainActivity.WATCH, apps.toTypedArray())
+                    .putExtra(MainActivity.ASKED, System.currentTimeMillis())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (MainActivity.visible) {
+                    runCatching { startActivity(ask) }
+                    return
+                }
+                val nm = getSystemService(NotificationManager::class.java)
+                nm.createNotificationChannel(
+                    NotificationChannel(ALERT_CHANNEL, "Claude Code alerts", NotificationManager.IMPORTANCE_HIGH)
+                )
+                // Notifications off: nothing would reach the user, so say so rather than leave Claude waiting.
+                if (!nm.areNotificationsEnabled() || nm.getNotificationChannel(ALERT_CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE) {
+                    TrafficVpn.answer(this, "unreachable")
+                    return
+                }
+                nm.notify(
+                    WATCH_ID, Notification.Builder(this, ALERT_CHANNEL)
+                        .setContentTitle("Claude Code")
+                        .setContentText("Claude wants to watch network traffic. Tap to decide")
+                        .setSmallIcon(android.R.drawable.stat_notify_chat)
+                        .setContentIntent(PendingIntent.getActivity(this, 2, ask,
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                        .setAutoCancel(true)
+                        .setTimeoutAfter(MainActivity.ASK_MS)
+                        .build()
+                )
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -201,6 +244,8 @@ class SessionService : Service() {
         private const val ALERT_CHANNEL = "cinder-alerts"
         private const val ALERT_ID = 9003
         private const val LONG_TURN_MS = 60_000L
+        private const val WATCH_ID = 9005
+        private val PACKAGE = Regex("[A-Za-z]\\w*(\\.[A-Za-z_]\\w*)+")
 
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, SessionService::class.java))

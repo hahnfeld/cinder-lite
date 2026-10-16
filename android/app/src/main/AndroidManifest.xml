@@ -66,6 +66,17 @@
                 android:resource="@xml/phone_accessibility" />
         </service>
 
+        <!-- Watching network traffic (⋮ → Watch network traffic): the user turns it on, Android asks
+             for VPN consent the first time and shows a key icon while it runs. -->
+        <service
+            android:name=".TrafficVpn"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
         <!-- Hands a sandbox file to the app the user picks (xdg-open on a file): read-only, and only
              the file each grant names. -->
         <provider
