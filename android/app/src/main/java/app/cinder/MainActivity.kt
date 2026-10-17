@@ -3,7 +3,6 @@ package app.cinder
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -16,7 +15,6 @@ import android.graphics.fonts.FontFamily
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.util.TypedValue
@@ -163,7 +161,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
      */
     private fun boot(reset: Boolean = false) {
         if (!busy.compareAndSet(false, true)) return
-        askForNotifications()
         val sandbox = sandbox
         val app = applicationContext
         if (reset || !sandbox.ready) {
@@ -306,25 +303,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 "login, settings and /workspace are kept.")
             .setPositiveButton("Reinstall") { _, _ -> if (!busy.get()) { finishAll(); boot(reset = true) } }
             .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    /**
-     * Claude's alerts are phone notifications. Android 13+ starts apps that target older versions (this
-     * one targets 28) with notifications off, and won't let them ask; so Cinder Lite asks, once.
-     */
-    private fun askForNotifications() {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (nm.areNotificationsEnabled() || prefs(this).getBoolean(ASKED_NOTIFICATIONS, false)) return
-        prefs(this).edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
-        AlertDialog.Builder(this)
-            .setTitle("Turn on notifications?")
-            .setMessage("Cinder Lite tells you when Claude finishes or needs you with a phone notification, but " +
-                "Android has them off. Turn them on in the next screen.")
-            .setPositiveButton("Open settings") { _, _ ->
-                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-            }
-            .setNegativeButton("Not now", null)
             .show()
     }
 
@@ -584,7 +562,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     companion object {
         private const val TAG = "cinder"
         private const val STORAGE = Manifest.permission.WRITE_EXTERNAL_STORAGE
-        private const val ASKED_NOTIFICATIONS = "askedNotifications"
         private const val VOICE = 2   // startActivityForResult codes; modules use 100 and up
         // Claude Code can't verify who owns its default messaging-socket directory under proot (its
         // uid reads as the kernel overflow uid), so it turns cross-session messaging off and warns.
