@@ -234,7 +234,8 @@ final class TerminalController: UIViewController {
         guard let module = list.module else { return [] }
         return [
             ("Turn off", { [weak self] in self?.setModule(module, on: false) }),
-            (look.complete ? "Done" : "Later", { [weak self] in self?.close() }),
+            look.complete ? ("Done", { [weak self] in self?.close(); self?.offerRestart(module) })
+                          : ("Later", { [weak self] in self?.close() }),
         ]
     }
 
@@ -432,10 +433,17 @@ final class TerminalController: UIViewController {
             guard off, let self else { return }
             Modules.set(module, on: false)
             if self.checklist?.module === module { self.close() }
-            self.confirm("\(module.title) is off", "Claude finds out when it next starts. Restart Claude now? That " +
-                         "ends this conversation; claude --continue picks it up again.", "Restart Claude", cancel: "Later") { [weak self] restart in
-                if restart { self?.launch(.claude) }
-            }
+            self.offerRestart(module)
+        }
+    }
+
+    /// Claude reads its brief when it starts, so it learns of a module turned on (its list done) or off
+    /// then. The same question either way, as on Android.
+    private func offerRestart(_ module: CinderModule) {
+        confirm("\(module.title) is \(Modules.isOn(module) ? "on" : "off")", "Claude finds out when it next starts. " +
+                "Restart Claude now? That ends this conversation; claude --continue picks it up again.",
+                "Restart Claude", cancel: "Later") { [weak self] restart in
+            if restart { self?.launch(.claude) }
         }
     }
 

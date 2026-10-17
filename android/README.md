@@ -234,8 +234,8 @@ each, ticked as it's done. A row that's yours has its button (Open Settings, All
 looks again when you come back to the app. Every row is checked against what's really on the phone,
 so a list that was interrupted or failed (✗, with Retry) picks up at its first unticked row, and
 turning a module on again just ticks what's already there. The module's checkbox in ⋮ → Modules is
-checked once its list is done; until then, tapping it brings the list back. ⋮ → **Restart Claude**
-lets Claude learn about it. Turning one off asks whether to delete its downloads too. ⋮ → Reinstall sandbox
+checked once its list is done; until then, tapping it brings the list back. **Done**, like turning
+one off, asks whether to restart Claude, which learns of modules when it starts. Turning one off asks whether to delete its downloads too. ⋮ → Reinstall sandbox
 deletes them, and turns off the modules that had any.
 
 ### Phone Use

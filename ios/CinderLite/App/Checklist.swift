@@ -87,10 +87,6 @@ final class Checklist {
             return ("→", step.detail, [(label, act)] + skip)
         }
     }
-
-    /// Under every finished module's list; the Android app says the same.
-    static let restart = "Claude learns about it when it next starts: ⋮ → Restart Claude (claude --continue " +
-        "picks the conversation back up)."
 }
 
 /// A checklist on screen: its title, a row per step, a Details toggle (the terminal underneath, where the
@@ -131,7 +127,7 @@ final class ChecklistView: UIView {
     func show(_ list: Checklist, _ look: Checklist.Look, actions: [(String, () -> Void)]) {
         let rows = list.steps.indices.map { list.row($0, look) }
         let heading = list.module.map { look.complete ? "\($0.title) is on" : list.title } ?? list.title
-        let note = look.complete && list.module != nil ? [list.summary, Checklist.restart].compactMap { $0 }.joined(separator: "\n\n") : nil
+        let note = look.complete ? list.summary : nil
         let signature = ([heading, "\(showDetails)", note ?? ""] + actions.map(\.0) + list.steps.indices.map {
             "\(rows[$0].mark ?? "…")\(list.steps[$0].title)\(rows[$0].detail ?? "")\(rows[$0].buttons.map(\.0))"
         }).joined(separator: "|")

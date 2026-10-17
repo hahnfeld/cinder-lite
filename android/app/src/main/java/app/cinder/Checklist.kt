@@ -166,8 +166,8 @@ class Checklist(
             row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
             into.addView(row)
         }
-        if (complete && module != null) into.addView(TextView(activity).apply {
-            text = listOfNotNull(summary, RESTART).joinToString("\n\n")
+        if (complete && summary != null) into.addView(TextView(activity).apply {
+            text = summary
             textSize = 13f
             setTextColor(Color.LTGRAY)
             setPadding(0, sp(12f), 0, 0)
@@ -178,8 +178,5 @@ class Checklist(
         val ORANGE: Int = Color.rgb(0xE0, 0x7A, 0x3A)
         private val GREEN = Color.rgb(0x7C, 0xB3, 0x42)
         private val RED = Color.rgb(0xE5, 0x53, 0x4B)
-        /** Under every finished module's list; the iOS app says the same. */
-        const val RESTART = "Claude learns about it when it next starts: ⋮ → Restart Claude (claude --continue " +
-            "picks the conversation back up)."
     }
 }

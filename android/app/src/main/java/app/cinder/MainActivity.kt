@@ -291,7 +291,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         })
         if (module != null && list.running == null) {
             button("Turn off") { turnOff(module) }
-            button(if (list.complete) "Done" else "Later") { back() }
+            if (list.complete) button("Done") { back(); offerRestart(module) } else button("Later") { back() }
         }
         terminal.visibility = View.INVISIBLE
         setupPane.visibility = View.VISIBLE
@@ -410,10 +410,13 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         open(checklist("Turning on ${module.title}", module.steps(app, sandbox), module))
     }
 
-    /** Claude still knows of it until it next starts; the iOS app asks the same. */
-    private fun turnedOff(module: Module) {
+    /**
+     * Claude reads its brief when it starts, so it learns of a module turned on (its list done) or off
+     * then. The same question either way, as on iOS.
+     */
+    private fun offerRestart(module: Module) {
         AlertDialog.Builder(this)
-            .setTitle("${module.title} is off")
+            .setTitle("${module.title} is ${if (Modules.isOn(this, module)) "on" else "off"}")
             .setMessage("Claude finds out when it next starts. Restart Claude now? That ends this conversation; " +
                 "claude --continue picks it up again.")
             .setPositiveButton("Restart Claude") { _, _ -> restart(Tab.Claude) }
@@ -450,7 +453,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         if (checklist?.module === module) back()
         if (!delete) {
             busy.set(false)
-            return turnedOff(module)
+            return offerRestart(module)
         }
         setupLog.setLength(0)
         log("turning off ${module.title} and deleting its files…")
@@ -459,7 +462,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             try {
                 module.deleteDownloads(app, sandbox, ::log)
                 log("done")
-                main.post { ui?.run { back(); turnedOff(module) } }
+                main.post { ui?.run { back(); offerRestart(module) } }
             } catch (e: Exception) {
                 Log.e(TAG, "couldn't delete ${module.title}'s files", e)
                 log("failed: ${e.message}")
