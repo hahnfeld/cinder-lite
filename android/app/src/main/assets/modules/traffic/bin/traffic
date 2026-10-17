@@ -2,8 +2,9 @@
 """traffic: what apps on this phone send and receive, as Cinder Lite captures it (Android only).
 
 Captures run from traffic start to traffic stop, while the user has Network Monitor on (⋮ → Modules).
-HTTPS is readable only from apps that accept user-installed certificates (Chrome, debug builds);
-other apps' connections show their hostname only.
+HTTPS is readable only once Cinder Lite's certificate is trusted on the phone (⋮ → Modules → Network
+Monitor → Open Settings) and the app accepts user-added certificates (Chrome, debug builds); otherwise
+connections show their hostname only.
   traffic [filter]       the requests, numbered (filter: text in the method, URL, status or type)
   traffic show N         one request and its response: headers, and text bodies up to 64 KB
   traffic start [app…]   start capturing all apps, or only these (package names)

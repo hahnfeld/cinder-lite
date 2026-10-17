@@ -147,7 +147,10 @@ class TrafficVpn : VpnService() {
         )
         check(TProxyService.TProxyStartService(config.absolutePath, fd.fd)) { "the tunnel didn't start" }
 
-        val readable = if (https) "HTTPS readable" else "hostnames only, HTTPS not readable"
+        // !https means the phone doesn't trust mitmproxy's CA, so nothing decrypts: say how to fix it,
+        // since the module can be on (and was, earlier) without the certificate still being trusted.
+        val readable = if (https) "HTTPS readable"
+            else "HTTPS not readable: trust Cinder Lite's certificate in ⋮ → Modules → Network Monitor"
         val what = if (apps.isEmpty()) "all apps" else apps.joinToString(", ") { label(it) }
         File(dir, "state").writeText("watching $what · $readable\n")
         getSystemService(NotificationManager::class.java).notify(ID, build("${what.replaceFirstChar(Char::uppercase)} · $readable"))
