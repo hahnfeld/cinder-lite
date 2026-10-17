@@ -234,7 +234,6 @@ final class TerminalController: UIViewController {
         guard let module = list.module else { return [] }
         return [
             ("Turn off", { [weak self] in self?.setModule(module, on: false) }),
-            ("Restart Claude", { [weak self] in self?.close(); self?.launch(.claude) }),
             (look.complete ? "Done" : "Later", { [weak self] in self?.close() }),
         ]
     }

@@ -291,7 +291,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         })
         if (module != null && list.running == null) {
             button("Turn off") { turnOff(module) }
-            button("Restart Claude") { restart(Tab.Claude) }
             button(if (list.complete) "Done" else "Later") { back() }
         }
         terminal.visibility = View.INVISIBLE

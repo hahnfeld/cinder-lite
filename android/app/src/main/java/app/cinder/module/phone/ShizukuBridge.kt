@@ -68,10 +68,14 @@ object ShizukuBridge {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var reminded = 0L
 
-    /** Shizuku's manager app, or Sui (root), which provides the same API without it. */
-    fun isInstalled(ctx: Context) = Shizuku.pingBinder() || runCatching {
+    /**
+     * Shizuku's app, or Sui (root), which provides the same API without one. Not just a server that
+     * answers: Shizuku's keeps running after its app is uninstalled, and without the app there's no
+     * one to grant its permission.
+     */
+    fun isInstalled(ctx: Context) = runCatching {
         ctx.packageManager.getPackageInfo(ShizukuProvider.MANAGER_APPLICATION_ID, 0); true
-    }.getOrDefault(false)
+    }.getOrDefault(false) || runCatching { Shizuku.pingBinder() && Shizuku.getUid() == 0 }.getOrDefault(false)
 
     fun isRunning() = Shizuku.pingBinder()
 

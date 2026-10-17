@@ -89,8 +89,8 @@ final class Checklist {
     }
 
     /// Under every finished module's list; the Android app says the same.
-    static let restart = "Claude learns about it when it next starts: Restart Claude ends this conversation, " +
-        "and claude --continue picks it back up."
+    static let restart = "Claude learns about it when it next starts: ⋮ → Restart Claude (claude --continue " +
+        "picks the conversation back up)."
 }
 
 /// A checklist on screen: its title, a row per step, a Details toggle (the terminal underneath, where the

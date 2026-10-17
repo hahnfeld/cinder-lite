@@ -179,7 +179,7 @@ class Checklist(
         private val GREEN = Color.rgb(0x7C, 0xB3, 0x42)
         private val RED = Color.rgb(0xE5, 0x53, 0x4B)
         /** Under every finished module's list; the iOS app says the same. */
-        const val RESTART = "Claude learns about it when it next starts: Restart Claude ends this conversation, " +
-            "and claude --continue picks it back up."
+        const val RESTART = "Claude learns about it when it next starts: ⋮ → Restart Claude (claude --continue " +
+            "picks the conversation back up)."
     }
 }
