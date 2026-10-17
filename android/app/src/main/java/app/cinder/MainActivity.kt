@@ -289,9 +289,10 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             setTextColor(Checklist.ORANGE)
             setOnClickListener { onClick() }
         })
+        // Finished: just Done. Unfinished: leave it for later, or don't want it after all.
         if (module != null && list.running == null) {
-            button("Turn off") { turnOff(module) }
-            if (list.complete) button("Done") { back(); offerRestart(module) } else button("Later") { back() }
+            if (list.complete) button("Done") { back(); offerRestart(module) }
+            else { button("Turn off") { turnOff(module) }; button("Later") { back() } }
         }
         terminal.visibility = View.INVISIBLE
         setupPane.visibility = View.VISIBLE

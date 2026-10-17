@@ -232,11 +232,9 @@ final class TerminalController: UIViewController {
     /// A module's list's buttons at the foot, as on Android; setup's has none.
     private func checklistActions(_ list: Checklist, _ look: Checklist.Look) -> [(String, () -> Void)] {
         guard let module = list.module else { return [] }
-        return [
-            ("Turn off", { [weak self] in self?.setModule(module, on: false) }),
-            look.complete ? ("Done", { [weak self] in self?.close(); self?.offerRestart(module) })
-                          : ("Later", { [weak self] in self?.close() }),
-        ]
+        // Finished: just Done. Unfinished: leave it for later, or don't want it after all.
+        if look.complete { return [("Done", { [weak self] in self?.close(); self?.offerRestart(module) })] }
+        return [("Turn off", { [weak self] in self?.setModule(module, on: false) }), ("Later", { [weak self] in self?.close() })]
     }
 
     /// Setup's checklist is showing: until it's done, the rest of the app waits.
