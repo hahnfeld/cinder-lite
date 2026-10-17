@@ -257,8 +257,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     /** A checklist that logs to setup's log, and waits while a reset or a delete is under way. */
     private fun checklist(title: String, steps: List<Step>, module: Module? = null, finished: () -> Unit = {}) =
-        Checklist(title, steps, module, module?.summary, ::log,
-            progress = { setupLog.lineSequence().lastOrNull { it.isNotBlank() } }, paused = { busy.get() }, finished = finished)
+        Checklist(title, steps, module, module?.summary, ::log, paused = { busy.get() }, finished = finished)
 
     /** Shows [list] in place of the terminal and gets it going. */
     private fun open(list: Checklist) {

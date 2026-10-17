@@ -54,8 +54,6 @@ class Checklist(
     val module: Module? = null,
     val summary: String? = null,
     private val log: (String) -> Unit,
-    /** The last line [log] printed, shown under the row that's running. */
-    private val progress: () -> String?,
     /** Whether something else (a reset) is changing the sandbox: no work may start meanwhile. */
     private val paused: () -> Boolean,
     private val finished: () -> Unit,
@@ -67,6 +65,9 @@ class Checklist(
     private var failed: Pair<Step, String>? = null
     @Volatile var running: Step? = null
         private set
+    /** The last line the running step printed, shown under it. Only its own: never the step before's. */
+    @Volatile private var lastLine: String? = null
+    private var redrawing = false
     var complete = false
         private set
     /** Redraws whatever shows this list; set by [MainActivity]. */
@@ -87,8 +88,13 @@ class Checklist(
         val work = next.work
         if (work != null && failed == null && (!next.download || agreed)) {
             running = next
+            lastLine = null
+            val output = { line: String ->
+                log(line)
+                if (line.isNotBlank()) { lastLine = line.trim(); redraw() }
+            }
             thread {
-                val error = runCatching { work(log); check(next.done()) { "it didn't finish (Details says why)" } }.exceptionOrNull()
+                val error = runCatching { work(output); check(next.done()) { "it didn't finish (Details says why)" } }.exceptionOrNull()
                 if (error != null) Log.e("cinder", "${next.title} failed", error)
                 main.post {
                     running = null
@@ -98,6 +104,13 @@ class Checklist(
             }
         }
         changed()
+    }
+
+    /** Redraws for a new line of output, a few times a second at most. */
+    private fun redraw() = main.post {
+        if (redrawing) return@post
+        redrawing = true
+        main.postDelayed({ redrawing = false; changed() }, 300)
     }
 
     /** Draws the list into [into]: a row per step, its state, and the current row's detail and buttons. */
@@ -113,6 +126,8 @@ class Checklist(
                 step in skipped -> "–"
                 step === running -> null
                 error != null -> "✗"
+                // About to run by itself (between one step and the next): a spinner. → waits for the user.
+                current && step.work != null && (!step.download || agreed) -> null
                 current -> "→"
                 else -> "○"
             }
@@ -137,7 +152,7 @@ class Checklist(
             val detail = when {
                 !current -> null
                 error != null -> error
-                state == null -> progress() ?: step.detail
+                state == null -> lastLine ?: step.detail
                 else -> step.detail
             }
             if (detail != null) text.addView(TextView(activity).apply {
