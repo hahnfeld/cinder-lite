@@ -463,11 +463,12 @@ final class TerminalController: UIViewController {
 
     private func reinstall() {
         let sheet = UIAlertController(title: "Reinstall sandbox?",
-                                      message: "Everything installed in the sandbox is removed, and the latest Claude Code is " +
-                                      "installed again. Your login, settings and /workspace are kept. Cinder Lite closes; " +
-                                      "open it again to set up.", preferredStyle: .alert)
+                                      message: "Everything installed in the sandbox is removed, the latest Claude Code is " +
+                                      "installed again, and every module turns off. Your login, settings and /workspace are " +
+                                      "kept. Cinder Lite closes; open it again to set up.", preferredStyle: .alert)
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in self?.showKeyboard() })
         sheet.addAction(UIAlertAction(title: "Reinstall", style: .destructive) { _ in
+            for module in Modules.enabled { Modules.set(module, on: false) }   // a clean start, as on Android
             Sandbox.shared.requestReset()
             exit(0)   // the emulator holds the old root until the process ends
         })

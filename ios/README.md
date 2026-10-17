@@ -64,7 +64,7 @@ Then Claude Code starts. Type `/login`; the sign-in page opens in Safari.
 
 Every row is checked against what's in the sandbox, so if setup is interrupted (iOS closed the app)
 it picks up at the first unticked row, and if it fails (no connection, no space) the row shows ✗ and
-**Retry**. ⋮ → Reinstall sandbox starts over from scratch.
+**Retry**. ⋮ → Reinstall sandbox starts over from scratch, with every module off.
 
 ## Using it
 

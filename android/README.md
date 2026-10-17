@@ -236,7 +236,7 @@ so a list that was interrupted or failed (✗, with Retry) picks up at its first
 turning a module on again just ticks what's already there. The module's checkbox in ⋮ → Modules is
 checked once its list is done; until then, tapping it brings the list back. **Done**, like turning
 one off, asks whether to restart Claude, which learns of modules when it starts. Turning one off asks whether to delete its downloads too. ⋮ → Reinstall sandbox
-deletes them, and turns off the modules that had any.
+deletes them and turns every module off, for a clean start.
 
 ### Phone Use
 

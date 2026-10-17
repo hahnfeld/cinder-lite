@@ -370,8 +370,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         if (working) return
         AlertDialog.Builder(this)
             .setTitle("Reinstall sandbox?")
-            .setMessage("Both sessions end, and everything installed in the sandbox is deleted: packages, Claude " +
-                "Code itself (it downloads again), and what modules downloaded (those modules turn off). Your " +
+            .setMessage("Both sessions end, everything installed in the sandbox is deleted (packages, Claude Code " +
+                "itself, which downloads again, and what modules downloaded), and every module turns off. Your " +
                 "login, settings and /workspace are kept.")
             .setPositiveButton("Reinstall") { _, _ -> reinstall() }
             .setNegativeButton("Cancel", null)
@@ -383,9 +383,9 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         if (working || !busy.compareAndSet(false, true)) return
         checklist = null
         finishAll()
-        // What they installed is deleted with the rest: off, until they're turned on again.
+        // A clean start: every module off, until it's turned on again (and its checklist run). The iOS app does the same.
         val app = applicationContext
-        for (module in Modules.enabled(app)) if (module.steps(app, sandbox).any { it.work != null }) Modules.set(app, module, false)
+        for (module in Modules.enabled(app)) Modules.set(app, module, false)
         setupLog.setLength(0)
         log("resetting the sandbox…")
         showLog()
