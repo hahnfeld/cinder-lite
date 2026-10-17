@@ -97,13 +97,22 @@ object ShizukuBridge {
             override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
                 if (requestCode != REQUEST) return
                 Shizuku.removeRequestPermissionResultListener(this)
+                unanswered = false
                 onResult(grantResult == PackageManager.PERMISSION_GRANTED)
             }
         }
         Shizuku.addRequestPermissionResultListener(listener)
+        unanswered = true
         Shizuku.requestPermission(REQUEST)
         return listener
     }
+
+    /**
+     * The last [requestPermission] never got an answer, as when Shizuku's server outlived its app: a
+     * reinstalled Shizuku can't show that server's prompt (it crashes). Asking clears it.
+     */
+    fun unanswered() = unanswered.also { unanswered = false }
+    @Volatile private var unanswered = false
 
     @Synchronized
     fun start(ctx: Context) {

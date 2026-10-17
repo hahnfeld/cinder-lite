@@ -23,9 +23,15 @@ object PhoneUse : Module {
         Step.ask("Install Shizuku", "Open download page", "Phone Use reaches the phone through Shizuku, a free app.",
             done = { ShizukuBridge.isInstalled(ctx) }) { ShizukuBridge.open(it) },
         Step.ask("Start Shizuku", "Open Shizuku", "Start it in its app (it walks you through Wireless debugging), " +
-            "then come back here.", done = { ShizukuBridge.isRunning() }) { ShizukuBridge.open(it) },
-        Step.ask("Allow Cinder Lite in Shizuku", "Allow", "If you told Shizuku not to ask again, Allow opens Shizuku: " +
-            "allow Cinder Lite there.", done = { ShizukuBridge.hasPermission() }) {
+            "then come back here. Starting it also replaces a Shizuku left running from before a reinstall.",
+            done = { ShizukuBridge.isInstalled(ctx) && ShizukuBridge.isRunning() }) { ShizukuBridge.open(it) },
+        Step.ask("Allow Cinder Lite in Shizuku", "Allow", "If Shizuku closes without asking, tap Allow again: it " +
+            "opens Shizuku, to start it again. If you told Shizuku not to ask again, allow Cinder Lite there.",
+            done = { ShizukuBridge.hasPermission() }) {
+            if (ShizukuBridge.unanswered()) {
+                ShizukuBridge.open(it)
+                error("Shizuku didn't ask. In Shizuku, start it again (stop it first if it says it's running), then come back.")
+            }
             if (ShizukuBridge.askable()) ShizukuBridge.requestPermission { MainActivity.recheck() } else ShizukuBridge.open(it)
         },
         Step.ask("Turn on phone screen access", "Open Settings", "Claude uses apps on a separate phone screen, in a " +
