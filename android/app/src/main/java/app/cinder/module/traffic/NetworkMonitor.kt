@@ -1,5 +1,6 @@
 package app.cinder.module.traffic
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
@@ -78,6 +79,9 @@ object NetworkMonitor : Module {
     override fun start(ctx: Context) = TrafficVpn.forgetStale(ctx)
 
     override fun stop(ctx: Context) = TrafficVpn.stop(ctx)
+
+    /** Back from Settings, where the user may have just trusted the certificate: a running capture looks again. */
+    override fun onResume(activity: Activity) = TrafficVpn.recheckTrust(activity)
 
     /**
      * `traffic start [app…]` and `traffic stop`. Turning the module on was the user's say-so, so a

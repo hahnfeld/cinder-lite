@@ -47,10 +47,16 @@ class TrafficVpn : VpnService() {
     private var tun: ParcelFileDescriptor? = null
     private var proxy: Process? = null
     @Volatile private var stopping = false
+    /** What it's watching, as the status line says it: "all apps", or the apps' names. */
+    private var watched = ""
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             shutdown()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_TRUST) {
+            if (tun != null) thread { report() }
             return START_NOT_STICKY
         }
         if (running) return START_NOT_STICKY
@@ -100,7 +106,7 @@ class TrafficVpn : VpnService() {
             if (!stopping) failed("Stopped watching network traffic: mitmproxy exited (see /tmp/cinder-traffic/mitmproxy.log)")
         }
         waitForReady(p, ready)
-        establish(apps, login, https = decrypt.exists(), dir)
+        establish(apps, login)
     }
 
     /**
@@ -108,7 +114,7 @@ class TrafficVpn : VpnService() {
      * means nothing starts, and one that comes later finds [tun] to close. So the VPN is never up
      * without mitmproxy behind it, which would leave the phone offline.
      */
-    @Synchronized private fun establish(apps: List<String>, login: String, https: Boolean, dir: File) {
+    @Synchronized private fun establish(apps: List<String>, login: String) {
         if (stopping) return
         val builder = Builder()
             .setSession("Cinder Lite: watching network traffic")
@@ -147,13 +153,27 @@ class TrafficVpn : VpnService() {
         )
         check(TProxyService.TProxyStartService(config.absolutePath, fd.fd)) { "the tunnel didn't start" }
 
-        // !https means the phone doesn't trust mitmproxy's CA, so nothing decrypts: say how to fix it,
-        // since the module can be on (and was, earlier) without the certificate still being trusted.
+        watched = if (apps.isEmpty()) "all apps" else apps.joinToString(", ") { label(it) }
+        report()
+    }
+
+    /**
+     * Whether HTTPS can be read, as the phone trusts the certificate right now: the flag
+     * cinder-traffic.py checks on each new connection, the status line and the notification. At the
+     * start, and again whenever the user comes back to the app ([recheckTrust]), so trusting the
+     * certificate in Settings mid-capture takes effect for connections from then on.
+     */
+    private fun report() {
+        val sandbox = Sandbox(applicationContext)
+        val dir = File(sandbox.tmp, "cinder-traffic")
+        val https = trusted(NetworkMonitor.caCert(sandbox))
+        val decrypt = File(dir, "decrypt")
+        if (https) decrypt.writeText("") else decrypt.delete()
+        if (tun == null) return   // stopped meanwhile
         val readable = if (https) "HTTPS readable"
             else "HTTPS not readable: trust Cinder Lite's certificate in ⋮ → Modules → Network Monitor"
-        val what = if (apps.isEmpty()) "all apps" else apps.joinToString(", ") { label(it) }
-        File(dir, "state").writeText("watching $what · $readable\n")
-        getSystemService(NotificationManager::class.java).notify(ID, build("${what.replaceFirstChar(Char::uppercase)} · $readable"))
+        File(dir, "state").writeText("watching $watched · $readable\n")
+        getSystemService(NotificationManager::class.java).notify(ID, build("${watched.replaceFirstChar(Char::uppercase)} · $readable"))
     }
 
     /**
@@ -232,6 +252,7 @@ class TrafficVpn : VpnService() {
         private const val CHANNEL = "cinder-traffic"
         private const val ID = 9004
         private const val ACTION_STOP = "app.cinder.STOP_TRAFFIC"
+        private const val ACTION_TRUST = "app.cinder.TRUST_TRAFFIC"
         private const val EXTRA_APPS = "apps"
         private const val PORT = 10800
         private const val MTU = 8500
@@ -245,6 +266,11 @@ class TrafficVpn : VpnService() {
         /** Starts watching [apps] (package names), or every app but this one. Needs VPN consent first. */
         fun start(ctx: Context, apps: List<String>) {
             ctx.startForegroundService(Intent(ctx, TrafficVpn::class.java).putExtra(EXTRA_APPS, apps.toTypedArray()))
+        }
+
+        /** A capture that's running looks again at whether the certificate is trusted (see [report]). */
+        fun recheckTrust(ctx: Context) {
+            if (running) runCatching { ctx.startService(Intent(ctx, TrafficVpn::class.java).setAction(ACTION_TRUST)) }
         }
 
         fun stop(ctx: Context) {

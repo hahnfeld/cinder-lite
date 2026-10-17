@@ -83,6 +83,9 @@ interface Module {
 
     /** ⋮ → Stop: end anything it's running. Asked of every module, on or off. */
     fun stop(ctx: Context) {}
+
+    /** The app is back on screen (from Settings, say): anything it should look at again. */
+    fun onResume(activity: Activity) {}
 }
 
 /** The modules, which are on, and switching them. */

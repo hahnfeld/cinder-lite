@@ -150,6 +150,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         // Back in the app: Claude's alert has done its job.
         SessionService.clearAlert(this)
         checklist?.advance()   // back from Settings or another app, where a step may have been done
+        Modules.enabled(this).forEach { it.onResume(this) }
     }
 
     override fun onPause() {
