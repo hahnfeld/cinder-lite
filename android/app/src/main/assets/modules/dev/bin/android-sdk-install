@@ -30,18 +30,21 @@ echo "==> d8 and apksigner (jars only)"
 termux-install --no-deps d8 apksigner
 
 echo "==> android.jar for API $API (from Google)"
-if [ ! -f "$SDK/platforms/android-$API/android.jar" ]; then
+# Google ships android.jar only inside the whole platform package (~60 MB). It's downloaded to /tmp,
+# checked, and only android.jar comes out of it; the zip goes however this ends (a failure too), and
+# what an interrupted run (or an older version of this, which unpacked it all) left goes first.
+JAR="$SDK/platforms/android-$API/android.jar"
+if [ ! -f "$JAR" ]; then
   command -v unzip >/dev/null 2>&1 || apk add unzip >/dev/null || { echo "! could not install unzip (apk add unzip)"; exit 1; }
-  wget -O /tmp/platform.zip "$PLATFORM_URL"   # ~60 MB: show progress
-  [ "$(sha256sum /tmp/platform.zip | cut -d' ' -f1)" = "$PLATFORM_SHA256" ] || {
-    rm -f /tmp/platform.zip; echo "! platform download failed its checksum"; exit 1; }
-  rm -rf /tmp/platform-x && mkdir -p /tmp/platform-x
-  unzip -q /tmp/platform.zip -d /tmp/platform-x
-  src=$(find /tmp/platform-x -name android.jar | head -1)
-  [ -n "$src" ] || { echo "android.jar not found in archive"; exit 1; }
-  mkdir -p "$SDK/platforms/android-$API"
-  cp "$src" "$SDK/platforms/android-$API/android.jar"
-  rm -rf /tmp/platform.zip /tmp/platform-x
+  zip=/tmp/platform.zip
+  trap 'rm -f "$zip" "$JAR.part"' EXIT
+  rm -rf "$zip" /tmp/platform-x
+  wget -O "$zip" "$PLATFORM_URL"   # show progress
+  [ "$(sha256sum "$zip" | cut -d' ' -f1)" = "$PLATFORM_SHA256" ] || { echo "! platform download failed its checksum"; exit 1; }
+  name=$(unzip -Z1 "$zip" | grep '/android\.jar$' | head -1)
+  [ -n "$name" ] || { echo "! android.jar not found in the platform package"; exit 1; }
+  mkdir -p "$(dirname "$JAR")"
+  unzip -p "$zip" "$name" > "$JAR.part" && mv "$JAR.part" "$JAR"
 fi
 
 echo

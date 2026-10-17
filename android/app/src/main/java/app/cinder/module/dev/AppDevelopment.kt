@@ -112,7 +112,9 @@ object AppDevelopment : Module {
         sandbox.deleteTree(File(sandbox.home, "android-sdk"))
         sandbox.deleteTree(File(sandbox.rootfs, "usr/local/jadx"))
         File(sandbox.rootfs, "usr/local/lib/apktool.jar").delete()
-        sandbox.tmp.listFiles { f -> f.name.startsWith("termux-") }?.forEach { sandbox.deleteTree(it) }
+        // What its installers download on the way (an interrupted run leaves them).
+        sandbox.tmp.listFiles { f -> f.name.startsWith("termux-") || f.name.startsWith("platform") || f.name.startsWith("jadx.zip") }
+            ?.forEach { sandbox.deleteTree(it) }
         // Then back to what the base needs: the few libraries nested proot (sudo, apk) uses.
         sandbox.deleteTree(sandbox.androidLib64)
         sandbox.stageAndroidRuntime()

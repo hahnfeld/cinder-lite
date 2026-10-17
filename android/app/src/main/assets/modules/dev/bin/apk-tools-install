@@ -2,6 +2,8 @@
 # APK reverse-engineering kit: apktool and jadx, pure Java on Alpine's own musl JVM. They need
 # none of android-bootstrap's bionic linker and libs, only a JVM that works.
 set -e
+# jadx's zip is only on the way into /usr/local/jadx: gone however this ends, a failure too.
+trap 'rm -f /tmp/jadx.zip /tmp/jadx.zip.part' EXIT
 LIB=/usr/local/lib
 mkdir -p "$LIB"
 
@@ -27,7 +29,7 @@ if [ ! -x /usr/local/jadx/bin/jadx ]; then
   command -v unzip >/dev/null 2>&1 || apk add unzip >/dev/null || { echo "! could not install unzip (apk add unzip)"; exit 1; }
   if fetch "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip" /tmp/jadx.zip \
         545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974; then
-    mkdir -p /usr/local/jadx && unzip -qo /tmp/jadx.zip -d /usr/local/jadx && rm -f /tmp/jadx.zip
+    mkdir -p /usr/local/jadx && unzip -qo /tmp/jadx.zip -d /usr/local/jadx
     chmod +x /usr/local/jadx/bin/* 2>/dev/null || true
   fi
 else
