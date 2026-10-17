@@ -23,8 +23,8 @@ Cinder Lite keeps Cinder's sandbox and drops its custom UI. Instead of driving `
 stream-json and re-rendering the conversation in Jetpack Compose, it shows **Claude Code's own
 terminal UI in a real terminal emulator** (Termux's). Everything the TUI already does (model
 picker, permission prompts, `/resume`, slash commands) comes from Claude Code itself, so the app
-is just the sandbox, a verified downloader and a terminal: four Kotlin files at its core (four
-more for the optional Shizuku features) and a ~4.5 MB APK.
+is just the sandbox, a verified downloader and a terminal: five Kotlin files at its core, each
+optional module in a package of its own, and a ~5 MB APK.
 It installs as `app.cinderlite`, so it can sit alongside the original.
 
 > Unofficial and unaffiliated with Anthropic. Sideload only. arm64-v8a, Android 11+.
@@ -61,8 +61,8 @@ Cinder Lite provides a Linux environment for the binary to run in, and a termina
 | Shell | One-shot commands on Android's host shell | A real bash in the sandbox, kept alongside Claude |
 | Phone files | Upload/export buttons | Shared storage mounted at `/sdcard` |
 | Claude Code install | Latest from npm, unverified | Latest from npm, sha512-verified, then Claude Code's native install, updated daily |
-| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,500 lines in 4 Kotlin files, plus ~1,100 in 4 for the optional Shizuku features |
-| Release APK | ~33 MB (debug) | ~4.5 MB, signed, R8-shrunk |
+| Code | ~6,500 lines of Kotlin + JNI PTY library | ~1,800 lines in 5 Kotlin files, plus ~2,400 for the three optional modules, each in its own package |
+| Release APK | ~33 MB (debug) | ~5 MB, signed, R8-shrunk |
 
 **Removed:** the stream-json bridge and transcript UI, markdown/LaTeX rendering, model/effort/
 permission pickers, the session-history drawer, the custom JNI PTY library, the in-app `notify`,
@@ -88,8 +88,9 @@ the 32-bit proot loader.
   install progress, and preinstalls bash, git, ripgrep, Python, Node.js and common tools.
 - Sandbox helper scripts live as real files in `assets/helpers/` instead of Kotlin strings.
 - `apk` reports real failures (exit codes) and streams its output; edge/testing repos are opt-in.
-- Android build tools on demand without Gradle or duplicate JDKs: `javac` → `d8` → `aapt2` →
-  `apksigner`, verified by building and installing an APK on a phone.
+- Optional modules, off until you turn them on (⋮ → Modules): Phone Use, Network Monitor and App
+  Development. App Development is Android build tools without Gradle or duplicate JDKs: `javac` →
+  `d8` → `aapt2` → `apksigner`, verified by building and installing an APK on a phone.
 - Device fixes: a kernel panic on Android 15 from the staged linker's path length, the Android
   linker's config warning, 16 KB page-size support (`libtermux.so` built from source).
 - Updated toolchain and runtime: AGP 9.4, Gradle 9.8, Kotlin 2.4, compileSdk 37 (Android 17),
@@ -114,25 +115,24 @@ the 32-bit proot loader.
   passed with `--settings`; your own Claude settings are untouched
 - **⋮ menu** — switch between Claude and a Shell (bash in the same sandbox; both keep running and
   keep their scrollback) · Restart the one you're looking at · Stop · Autocorrect (on/off) ·
-  Shizuku (on/off; see below) · Watch network traffic (on/off; see below) · Reinstall sandbox (a
-  clean reset that keeps your login and `/workspace`)
-- **Package management without root** — `apk add`, `npm -g`, `pip install`, plus Android build and
-  APK decompile tools
-- **Optional adb-shell access via [Shizuku](https://shizuku.rikka.app/)** — off by default; see
-  [below](#adb-shell-access-with-shizuku-optional). It also lets Claude drive apps on a separate
-  phone screen in a picture-in-picture window
-- **Watching network traffic** — off by default; what the phone's apps send and receive, HTTPS
-  included where an app allows it, captured by mitmproxy in the sandbox for Claude to read; see
-  [below](#watching-network-traffic-optional)
+  a module's own items while it's on (Shizuku, Watch network traffic) · Modules · Reinstall sandbox
+  (a clean reset that keeps your login and `/workspace`)
+- **Package management without root** — `apk add`, `npm -g`, `pip install`
+- **Optional modules** — each off until you turn it on in ⋮ → Modules, when it downloads what it
+  needs; see [below](#modules):
+  - **Phone Use** — adb-shell access through [Shizuku](https://shizuku.rikka.app/), and Claude
+    driving apps on a separate phone screen in a picture-in-picture window
+  - **Network Monitor** — what the phone's apps send and receive, HTTPS included where an app allows
+    it, captured by mitmproxy in the sandbox for Claude to read
+  - **App Development** — building Android apps on the phone, and taking APKs apart
 
 **Storage:** the APK is ~5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
-is ~240 MB, plus the rootfs and base tools). Installing the Android toolchains adds ~200 MB of the
-device's own libraries plus the tools themselves; mitmproxy, the first time you watch network
-traffic, about 50 MB.
+is ~240 MB, plus the rootfs and base tools). Network Monitor adds about 50 MB; App Development about
+700 MB (its tools, and a copy of the device's own libraries).
 
 **Trust model:** Claude Code and anything it runs can read and write everything under `/sdcard`
 once storage access is granted, and can reach the network. That's the point — but use Claude Code's
-own permission prompts accordingly. With Shizuku on, it also has adb-shell power
+own permission prompts accordingly. With Phone Use's Shizuku switch on, it also has adb-shell power
 ([see below](#be-deliberate-about-turning-it-on)). While you're watching network traffic, it can read
 what your apps send ([see below](#what-claude-sees)).
 
@@ -204,23 +204,37 @@ a short host path (`files/lx/`) bound in there.
 | Alpine packages | `apk add <pkg>` (stable); `apk add <pkg>@edge` / `<pkg>@testing` for rolling ones |
 | Node modules | `npm install -g <pkg>` |
 | Python modules | `pip install <pkg>` |
-| Android build tools | `android-sdk-install` (or `termux-install <pkg>`) |
-| APK decompile tools | `apk-tools-install` (apktool + jadx) |
+| Android build and APK decompile tools | the App Development module ([below](#app-development)) |
 
 Nothing runs as device root. proot's `-0` is userspace fake root — no Magisk, no unlocked bootloader,
 no kernel involvement.
 
-**Building Android apps on the phone:** `android-sdk-install` sets up Alpine's OpenJDK 17 (`javac`,
-`keytool`), Termux's aarch64 `aapt2`, the `d8` and `apksigner` jars, and Google's `android.jar` —
-a `javac` → `d8` → `aapt2` → `apksigner` pipeline. Google's own SDK build-tools and NDK are x86-64
-binaries and can't run on an ARM phone, and neither can Gradle-based Android builds (the Android Gradle
-Plugin fetches x86-64 tools). The first Termux install asks the app to copy the device's bionic
-libraries (~200 MB) into the sandbox, so keep the app open while it runs. apktool and jadx run on
-Alpine's JDK too.
-
 <br>
 
-## adb-shell access with Shizuku (optional)
+## Modules
+
+The base app runs Claude Code and nothing else. Three modules add more, each off until you turn it
+on in ⋮ → **Modules**:
+
+| Module | What Claude can do with it | What turning it on downloads |
+|---|---|---|
+| [Phone Use](#phone-use) | run `adb shell` commands through Shizuku, and use apps on a separate phone screen | nothing |
+| [Network Monitor](#network-monitor) | see what the phone's apps send and receive | mitmproxy, ~50 MB |
+| [App Development](#app-development) | build Android apps, and take APKs apart | ~450 MB of tools, plus a ~260 MB copy of the device's libraries |
+
+A module that's off isn't there for Claude: its commands aren't in the sandbox, Claude's brief
+doesn't mention it (only that it exists and where to turn it on), and its parts of the app are
+switched off in Android too, so its accessibility service doesn't show in Settings and its VPN
+can't start. Turning one on downloads what it needs, the first time only, then offers to restart
+Claude so it learns about it. Turning one off asks whether to delete those downloads too.
+
+### Phone Use
+
+adb-shell access for the sandbox through Shizuku, and a phone screen Claude operates apps on.
+Nothing to download: its helpers run on the base Python. Shizuku is a switch of its own inside it
+(⋮ → Shizuku, shown while Phone Use is on), since it hands the sandbox adb-shell power. Turning
+Phone Use off turns Shizuku off and takes its accessibility service out of Settings, so after
+turning it back on, you turn both on again.
 
 Inside the sandbox, Claude and the shell run as Cinder Lite's own app user, which Android gives very
 few rights. So the Android system tools don't work there: `pm` for packages, `am` for activities,
@@ -228,7 +242,7 @@ few rights. So the Android system tools don't work there: `pm` for packages, `am
 `adb shell`. With Shizuku, Cinder Lite can give the sandbox the same access with nothing but the
 phone.
 
-### What Shizuku is
+#### What Shizuku is
 
 [Shizuku](https://shizuku.rikka.app/) ([source](https://github.com/RikkaApps/Shizuku)) is a free,
 open-source Android app by RikkaApps. It doesn't root the phone. Instead, it uses Android's own
@@ -262,13 +276,14 @@ services behind `cmd`, and shell built-ins, pipes and loops. Some examples:
 
 They don't allow reading other apps' private data or changing the system partition. That needs root.
 
-### Setting it up
+#### Setting it up
 
 1. Install Shizuku from [Google Play](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)
    or [GitHub](https://github.com/RikkaApps/Shizuku/releases). Start it via Wireless debugging, as
    its app walks you through.
-2. In Cinder Lite: ⋮ → **Shizuku**, then allow Cinder Lite in Shizuku's permission dialog. The
-   setting is remembered, and the menu item shows a check while it's on.
+2. In Cinder Lite: ⋮ → **Modules** → **Phone Use**, then ⋮ → **Shizuku**, and allow Cinder Lite in
+   Shizuku's permission dialog. The setting is remembered, and the menu item shows a check while
+   it's on. Turning Phone Use off turns Shizuku off too.
 3. In the sandbox:
 
    ```sh
@@ -288,7 +303,7 @@ tells you what to do.
 If you start Shizuku while Cinder Lite is open, switch to another app and back: Shizuku hands its
 connection to an app when the app comes to the front. Your sessions keep running.
 
-### The `adb` shim
+#### The `adb` shim
 
 Many scripts, and Claude's own habits, reach for `adb shell …`. The sandbox's `adb` is a small shim:
 
@@ -301,7 +316,7 @@ Many scripts, and Claude's own habits, reach for `adb shell …`. The sandbox's 
 To install an APK on this phone, you don't need `adb install`. Copy the file to `/sdcard/Download`
 and open it there, or run `rish -c 'pm install /sdcard/Download/app.apk'`.
 
-### How it works
+#### How it works
 
 Shizuku comes with its own `rish` command, but it can't run here. It starts Android's Java runtime
 (`app_process`), and inside proot that can't load: Android lets the app *run* files in `/system` but
@@ -334,7 +349,7 @@ sandbox   rish            exits with the command's exit status
   `logcat | grep x` ends too. When the setting is turned off, the bridge stops listening and the
   Shizuku service is shut down.
 
-### Limits
+#### Limits
 
 - **No real terminal.** Interactive `rish` is line-based, like piping into `adb shell`. Full-screen
   programs like `top` (without `-n 1`) or `vi` won't work, and there's no prompt editing.
@@ -347,7 +362,7 @@ sandbox   rish            exits with the command's exit status
   under `/sdcard` first.
 - **Shizuku has to be restarted after every reboot**, unless the phone is rooted.
 
-### The phone screen: Claude drives apps in a picture-in-picture window
+#### The phone screen: Claude drives apps in a picture-in-picture window
 
 With Shizuku on, Claude can also use apps for you, on a **separate virtual screen** shown in a
 picture-in-picture window that floats over everything, like a video. The apps it opens run there,
@@ -422,7 +437,7 @@ Limits:
 - When you take it over, you can tap, scroll and go Back, but no keyboard comes up for its text
   fields (it would type into your own screen's app); ask Claude to type instead.
 
-### Be deliberate about turning it on
+#### Be deliberate about turning it on
 
 While it's on, everything in the sandbox has adb-shell power, Claude included. That means it can
 uninstall apps, change settings, grant permissions and tap the screen, and use apps on the phone
@@ -438,26 +453,25 @@ Turn it off when you don't need it: ⋮ → **Shizuku** again. Code in the sandb
 itself, so it could turn that switch back on; revoking Cinder Lite in the Shizuku app is the off
 switch nothing inside can undo.
 
-<br>
+### Network Monitor
 
-## Watching network traffic (optional)
-
-⋮ → **Watch network traffic** shows Claude (and you) what the phone's apps send and receive: every
-request, its headers and body, and the response. It's the same thing Reqable, HTTP Toolkit and
-PCAPdroid do, on your own phone and only while you have it on. Ask Claude things like "what does
+Shows Claude (and you) what the phone's apps send and receive: every request, its headers and body,
+and the response. It's the same thing Reqable, HTTP Toolkit and PCAPdroid do, on your own phone and
+only while you have it on. Ask Claude things like "what does
 this app send when I tap Sync?" or "why does this page load slowly?".
 
-**Turning it on.** The first time:
+**Turning it on.** ⋮ → **Modules** → **Network Monitor** installs
+[mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`, about 50 MB and a minute) and
+makes a certificate for it, named *Cinder Lite*. Then ⋮ → **Watch network traffic** starts watching.
+The first time:
 
-1. Cinder Lite installs [mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`,
-   about a minute) and makes a certificate for it, named *Cinder Lite*.
-2. To read HTTPS, Android needs you to trust that certificate. Since Android 11 no app can do this
+1. To read HTTPS, Android needs you to trust that certificate. Since Android 11 no app can do this
    for you, or even open the screen for it, so Cinder Lite saves *Cinder Lite certificate.crt* to
    Downloads and opens Settings: search for **CA certificate**, tap **Install anyway**, and pick the
    file. Android asks you to set a screen lock first if there isn't one. Back in Cinder Lite it
    notices the certificate and carries on. **Without HTTPS** skips this: you then see which hosts
    apps connect to, but not what they send.
-3. Android asks once whether Cinder Lite may set up a VPN.
+2. Android asks once whether Cinder Lite may set up a VPN.
 
 After that it starts at a tap. While it's on, Android shows a key icon in the status bar and Cinder
 Lite a notification with **Stop**. ⋮ → **Watch network traffic** again, or ⋮ → **Stop**, also
@@ -473,7 +487,7 @@ doesn't try.
 **While it's on**, calls, some games and anything else using UDP, other than DNS, won't get through:
 mitmproxy's proxy only carries TCP. Browsers fall back from QUIC to ordinary HTTPS on their own.
 
-### What Claude sees
+#### What Claude sees
 
 Claude reads the capture with `traffic` (`traffic`, `traffic show N`, `traffic help`):
 
@@ -492,7 +506,7 @@ Claude reads the capture with `traffic` (`traffic`, `traffic show N`, `traffic h
 *Cinder Lite* → **Uninstall**. While it's installed, anyone with its key (it stays in the sandbox,
 in `/root/.mitmproxy`) could read the HTTPS of apps that accept it.
 
-### How it works
+#### How it works
 
 Android's `VpnService` hands Cinder Lite the packets of the apps being watched (every app but Cinder
 Lite itself, or just the ones Claude named). [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)
@@ -501,6 +515,26 @@ sandbox over SOCKS5 on `127.0.0.1`, with a password made fresh each time so othe
 it; if something else is already listening on that port, it won't start. DNS is answered inside the tunnel, so mitmproxy sees hostnames rather than addresses. Cinder
 Lite's own traffic, mitmproxy's included, stays outside the VPN. If mitmproxy exits, the VPN goes
 down with it, so the phone is never left offline; if the app is killed, Android drops the VPN.
+
+### App Development
+
+Building Android apps on the phone, and taking APKs apart. Turning it on (⋮ → **Modules** → **App
+Development**) installs it all in one go, about 450 MB of tools plus a ~260 MB copy of the device's
+own libraries, so allow a few minutes on wifi:
+
+- **The build pipeline** (`android-sdk-install`): Alpine's OpenJDK 17 (`javac`, `keytool`),
+  Termux's aarch64 `aapt2`, the `d8` and `apksigner` jars, and Google's `android.jar`, for
+  `javac` → `d8` → `aapt2` → `apksigner`. Google's own SDK build-tools and NDK are x86-64 binaries and
+  can't run on an ARM phone, and neither can Gradle-based Android builds (the Android Gradle Plugin
+  fetches x86-64 tools).
+- **Termux's Android binaries** (`termux-install <pkg>`, cross-compilers included). They need the
+  device's bionic libraries, which only the app can read, so turning the module on copies them into
+  the sandbox; `android-bootstrap` then points each binary at them.
+- **APK tools** (`apk-tools-install`): apktool (with `baksmali` and `smali` shims) and jadx, on
+  Alpine's JDK.
+
+If a piece goes missing later, its installer puts it back when run. Turning the module off removes
+the commands from Claude's sight; you can keep the downloads, or delete them.
 
 <br>
 
@@ -545,6 +579,15 @@ Without those lines `assembleRelease` produces an unsigned APK. Every update mus
 same key, or Android refuses to install it over the previous version — back the keystore up. Don't
 hand out debug builds: they're debuggable, so anyone with adb access to the phone could read the
 Claude Code login out of the app's storage.
+
+**Adding a module.** A module is a package under `app/src/main/java/app/cinder/module/` and a folder
+under `app/src/main/assets/modules/<id>/`: `bin/` (helpers, on PATH while it's on), `libexec/`
+(other files for the sandbox) and `brief.md` (what Claude is told about it). Its Kotlin object
+implements `Module` (`module/Module.kt`), overriding what it needs: an install for the first time
+it's turned on, prelude lines, request files, menu items, activity hooks. List it in `Modules.all`.
+Manifest components only it uses get `android:enabled="false"` and go in its `components`. The base
+(`MainActivity`, `SessionService`, `Sandbox`) only ever reaches a module through `Modules`. The iOS
+app's `CinderModule` has the same shape.
 
 **Claude Code updates.** Nothing to do in the app: Claude Code lives in its standard native install
 in the sandbox's home (`/root/.local/bin/claude`). Its own update check slowed every start, so it's

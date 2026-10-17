@@ -1,4 +1,4 @@
-package app.cinder
+package app.cinder.module.phone
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -28,6 +28,7 @@ import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import app.cinder.MainActivity
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit

@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Environment
 import android.system.Os
 import android.util.Base64
+import app.cinder.module.Module
+import app.cinder.module.Modules
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
@@ -35,7 +37,7 @@ import java.util.zip.GZIPInputStream
  *     workspace/       the agent's cwd (/workspace)
  *     bin/             proot and the helper scripts (/usr/local/bin)
  *     lib/             proot's libraries: libtalloc, libandroid-shmem (/usr/local/androidlib)
- *     libexec/         proot's loader, Claude's system-prompt brief and hooks, rish's socket (/usr/local/libexec)
+ *     libexec/         proot's loader, Claude's system-prompt brief and hooks, modules' files (/usr/local/libexec)
  *     lx/              the staged bionic linker64 (/usr/local/androidlibexec) — see [androidLibexec]
  *     tmp/             (/tmp)
  *     rootfs/          the Alpine tree that becomes /
@@ -84,31 +86,28 @@ class Sandbox(private val ctx: Context) {
         listOf(home, workspace, bin, lib, libexec, rootfs, tmp).forEach { it.mkdirs() }
     }
 
-    /** Set once [stageAndroidRuntime] has copied every bionic library (Termux tooling needs them). */
-    private val fullRuntimeMarker get() = File(androidLib64, ".full")
-
     /**
-     * Copies the bionic dynamic linker and system .so files into the rootfs using ordinary file
-     * I/O from the app's own process — the one context that can read them, since proot can't bind
-     * /apex under this SELinux domain. Only copies what's missing.
-     *
-     * By default that's just what nested proot (sudo, apk) needs — a few MB. [full] copies the
-     * device's whole bionic library set (~200 MB), which only Termux binaries need; termux-install
-     * asks the app for it through a request file (see SessionService).
+     * Copies the bionic dynamic linker and the system .so files nested proot (sudo, apk) needs — a few
+     * MB — into the rootfs, using ordinary file I/O from the app's own process: the one context that
+     * can read them, since proot can't bind /apex under this SELinux domain. Only copies what's
+     * missing. (App Development copies the device's whole set, for Termux's tools.)
      */
-    fun stageAndroidRuntime(full: Boolean = false) {
+    fun stageAndroidRuntime() {
         listOf(androidLib64, androidLibexec, shims).forEach { it.mkdirs() }
         val linkerDst = File(androidLibexec, "linker64")
-        val wanted = if (full) null else NESTED_PROOT_LIBS
-        val libsStaged = wanted?.all { File(androidLib64, it).exists() } ?: fullRuntimeMarker.exists()
-        if (linkerDst.canExecute() && libsStaged) return
+        if (linkerDst.canExecute() && NESTED_PROOT_LIBS.all { File(androidLib64, it).exists() }) return
 
         if (!linkerDst.canExecute()) {
             for (cand in listOf("/apex/com.android.runtime/bin/linker64", "/system/bin/linker64")) {
                 if (runCatching { stage(File(cand), linkerDst, executable = true) }.isSuccess) break
             }
         }
+        stageAndroidLibs { it in NESTED_PROOT_LIBS }
+    }
 
+    /** Copies the device's bionic .so files whose names pass [wanted] into [androidLib64], where missing. */
+    fun stageAndroidLibs(wanted: (String) -> Boolean) {
+        androidLib64.mkdirs()
         // cp by resolving symlinks so each name is a real file in one flat directory the linker
         // (and each lib's own rpath) can scan. Unreadable APEX partitions are simply skipped.
         val srcDirs = listOf(
@@ -120,14 +119,13 @@ class Sandbox(private val ctx: Context) {
         )
         for (d in srcDirs) {
             val files = runCatching {
-                File(d).listFiles { f -> f.isFile && f.name.endsWith(".so") && (wanted == null || f.name in wanted) }
+                File(d).listFiles { f -> f.isFile && f.name.endsWith(".so") && wanted(f.name) }
             }.getOrNull() ?: continue
             for (so in files) {
                 val dst = File(androidLib64, so.name)
                 if (!dst.exists()) runCatching { stage(so, dst) }
             }
         }
-        if (full) fullRuntimeMarker.createNewFile()
     }
 
     /**
@@ -167,10 +165,9 @@ class Sandbox(private val ctx: Context) {
      * What [installBaseTools] puts down, as apk itself records it. Installs from before apk could
      * write its database have the files but no record, and get them installed (recorded) again.
      */
-    val hasBaseTools get() = installed.containsAll(listOf("P:bash", "P:python3", "P:nodejs", "P:tzdata"))
-    /** mitmproxy, for watching network traffic: installed the first time that's turned on, not at setup. */
-    val hasMitmproxy get() = "P:mitmproxy" in installed
-    private val installed get() = runCatching {
+    val hasBaseTools get() = installedPackages.containsAll(listOf("P:bash", "P:python3", "P:nodejs", "P:tzdata"))
+    /** The packages apk has installed, as its database lists them: "P:bash", "P:python3", … */
+    val installedPackages get() = runCatching {
         File(rootfs, "lib/apk/db/installed").useLines { lines -> lines.filter { it.startsWith("P:") }.toSet() }
     }.getOrDefault(emptySet())
     /** The base tools' telltale files, recorded or not. */
@@ -326,36 +323,16 @@ class Sandbox(private val ctx: Context) {
         // Claude Code wants a POSIX shell it can drive; busybox ash is a fallback, real bash is
         // what it asks for. SHELL has to name one that exists or the Bash tool refuses to run.
         val shell = if (hasBash) "/bin/bash" else "/bin/sh"
+        val modules = Modules.enabled(ctx)
         val prelude = buildString {
             // /usr/local/shims is first so agent-facing wrappers (e.g. a nested-safe `proot`) win
-            // over the native binaries bound in under /usr/local/bin.
-            //
-            // CRITICAL: Alpine's own bin dirs come BEFORE Termux's. Termux ships bionic coreutils
-            // (sort, head, cut, java, …) that need libandroid-selinux.so and the linker treatment;
-            // if they shadow Alpine's reliable musl builds, ordinary commands — even the ones inside
-            // these very helper scripts (termux-install uses `sort -u`) — die with "library not
-            // found". So Alpine wins for anything it has, and Termux only supplies what Alpine lacks
-            // (aapt2, d8, apksigner — none of which exist in Alpine, so they're still found).
+            // over the native binaries bound in under /usr/local/bin. Alpine's own dirs come before
+            // any a module adds (App Development's Termux tools), and Android's /system/bin last.
             append("export PATH=/usr/local/shims:/usr/local/bin:/root/.npm-global/bin:/root/.local/bin:")
             append("/usr/bin:/bin:/usr/sbin:/sbin:")
-            append("/data/data/com.termux/files/usr/bin:")   // Android-native tools (aapt2, d8…), after Alpine
+            modules.flatMap { it.path }.forEach { append("$it:") }
             append("/system/bin:/system/xbin; ")
-            append("export TERMUX_PREFIX=/data/data/com.termux/files/usr; ")
-            append("export ANDROID_HOME=/root/android-sdk ANDROID_SDK_ROOT=/root/android-sdk; ")
-            // A JVM under proot trips over three things by default: it maps a shared class-data
-            // archive at a fixed address, writes perf data into /tmp/hsperfdata, and sizes its
-            // heap from the device's total RAM rather than what this process may actually get.
-            // -Xshare:off      : the CDS archive maps at a fixed address proot won't honour
-            // -UsePerfData     : hsperfdata needs working shared memory
-            // UseSerialGC      : G1 reserves large regions up front and fails under proot
-            // CompressedClassSpaceSize: the default 1 GB reservation is refused
-            // -Xmx512m         : the JVM sizes the heap from total RAM, then can't reserve it
-            append("export JAVA_TOOL_OPTIONS=\"-XX:-UsePerfData -Xshare:off -XX:+UseSerialGC ")
-            append("-XX:CompressedClassSpaceSize=64m -Xms16m -Xmx512m -Djava.io.tmpdir=/tmp\"; ")
-            // Alpine's JVM, not Termux's: a musl-native HotSpot that JITs, rather than an Android
-            // binary that can't find its loader in here.
-            append("export JAVA_HOME=/usr/lib/jvm/default-jvm; ")
-            append("export PATH=\$PATH:/usr/lib/jvm/default-jvm/bin:/usr/local/jadx/bin; ")
+            modules.forEach { append(it.prelude) }
             append("unset LD_LIBRARY_PATH; export HOME=/root TMPDIR=/tmp SHELL=$shell; ")
             // npm -g and pip both want to write to system dirs, which the unprivileged agent
             // can't touch. Point them at the home directory instead so installs just work.
@@ -408,22 +385,50 @@ class Sandbox(private val ctx: Context) {
     }
 
     /**
-     * Installs the sandbox's helper commands from assets/helpers/ — sudo, the apk shim, xdg-open,
-     * the Android-toolchain installers and friends (each script documents itself). bin/ is
-     * /usr/local/bin; shims/ is first on PATH, for wrappers that must shadow a real binary
-     * (proot, getprop). Plus Claude's system-prompt brief and notification hooks, and a linker config
-     * for the staged bionic linker (see assets/linkerconfig/ld.config.txt).
+     * Installs the sandbox's helper commands from assets/helpers/ — sudo, the apk shim, xdg-open and
+     * friends (each script documents itself). bin/ is /usr/local/bin; shims/ is first on PATH, for
+     * wrappers that must shadow a real binary (proot, getprop). Plus Claude's notification hooks, a
+     * linker config for the staged bionic linker (see assets/linkerconfig/ld.config.txt), and
+     * Claude's system-prompt brief ([writeBrief]).
+     *
+     * Then each module's files (assets/modules/<id>/bin, libexec) while it's on; while it's off they're
+     * removed, so Claude finds none of its commands.
      */
     private fun writeHelpers() {
-        copyAsset("brief.md", File(libexec, "cinder-brief.md"))
         copyAsset("claude-settings.json", File(libexec, "cinder-settings.json"))
-        copyAsset("cinder-traffic.py", File(libexec, "cinder-traffic.py"))   // mitmproxy's add-on (TrafficVpn)
         copyAsset("linkerconfig/ld.config.txt", File(rootfs, "linkerconfig/ld.config.txt"))
         for ((dir, target) in listOf("bin" to bin, "shims" to shims)) {
             for (name in ctx.assets.list("helpers/$dir").orEmpty()) {
                 copyAsset("helpers/$dir/$name", File(target, name), executable = true)
             }
         }
+        val on = Modules.enabled(ctx)
+        for (module in Modules.all) {
+            for ((dir, target) in listOf("bin" to bin, "libexec" to libexec)) {
+                for (name in ctx.assets.list("modules/${module.id}/$dir").orEmpty()) {
+                    val file = File(target, name)
+                    if (module in on) copyAsset("modules/${module.id}/$dir/$name", file, executable = dir == "bin")
+                    else file.delete()
+                }
+            }
+        }
+        writeBrief(on)
+    }
+
+    /**
+     * Claude's brief (--append-system-prompt): the base text, a line naming the modules and where
+     * they're turned on, and what each module that's on adds (assets/modules/<id>/brief.md).
+     */
+    private fun writeBrief(on: List<Module>) {
+        fun asset(name: String) = ctx.assets.open(name).use { it.readBytes().decodeToString() }.trimEnd()
+        val brief = buildString {
+            append(asset("brief.md")).append('\n')
+            append("- Cinder Lite has optional modules, which the user turns on in its ⋮ menu → Modules: ")
+            append(Modules.all.joinToString("; ") { "${it.title} (${if (it in on) "on" else "off"}): ${it.blurb}" })
+            append(". If a task needs one that's off, tell the user how to turn it on rather than working around it.\n")
+            on.forEach { append(asset("modules/${it.id}/brief.md")).append('\n') }
+        }
+        replace(File(libexec, "cinder-brief.md"), executable = false) { it.write(brief.toByteArray()) }
     }
 
     private fun copyAsset(name: String, to: File, executable: Boolean = false) =
@@ -546,24 +551,8 @@ class Sandbox(private val ctx: Context) {
         check(hasBaseFiles) { "bash, python3 or node is still missing" }
     }
 
-    fun installMitmproxy(log: (String) -> Unit) {
-        run("/sbin/apk add --no-cache mitmproxy", asRoot = true, log = log)
-        check(hasMitmproxy) { "mitmproxy didn't install" }
-    }
-
-    /** The certificate mitmproxy signs with: made once, kept with its key in /root/.mitmproxy. */
-    val caCert get() = File(home, ".mitmproxy/mitmproxy-ca-cert.pem")
-
-    /** Makes [caCert] the way mitmproxy would, but named Cinder Lite, so Settings says whose it is. */
-    fun ensureCa(log: (String) -> Unit) {
-        if (caCert.exists()) return
-        run("python3 -c 'import pathlib; from mitmproxy.certs import CertStore; " +
-            "CertStore.create_store(pathlib.Path(\"/root/.mitmproxy\"), \"mitmproxy\", 2048, \"Cinder Lite\", \"Cinder Lite\")'", log = log)
-        check(caCert.exists()) { "couldn't make the certificate" }
-    }
-
     /** Deletes [dir] and everything under it without following symlinks out of it. */
-    private fun deleteTree(dir: File) {
+    fun deleteTree(dir: File) {
         val start = dir.toPath()
         if (!Files.exists(start, LinkOption.NOFOLLOW_LINKS)) return
         Files.walkFileTree(start, object : SimpleFileVisitor<Path>() {
@@ -586,11 +575,11 @@ class Sandbox(private val ctx: Context) {
         })
     }
 
-    /** Runs [inner] in the sandbox, logging each line of its combined output. */
-    private fun run(inner: String, asRoot: Boolean = false, log: (String) -> Unit) {
-        val p = spawn("$inner 2>&1", asRoot)
+    /** Runs [inner] in the sandbox, logging each line of its combined output; returns its exit status. */
+    fun run(inner: String, asRoot: Boolean = false, log: (String) -> Unit): Int {
+        val p = spawn("($inner) 2>&1", asRoot)
         p.inputStream.bufferedReader().forEachLine { if (it.isNotBlank()) log("  ${it.trim()}") }
-        p.waitFor()
+        return p.waitFor()
     }
 
     /**

@@ -24,8 +24,8 @@ targets:
       - path: ish-AOK/tools/fakefs.c
       - path: CinderLite/Resources
         buildPhase: resources
-      # The guest's helpers (bin/, libexec/), copied into the sandbox at every launch: a folder
-      # reference, so the bundle keeps the two directories.
+      # The guest's helpers (bin/, libexec/, and each module's under modules/<id>/), copied into the
+      # sandbox at every launch: a folder reference, so the bundle keeps the directories.
       - path: CinderLite/Guest
         type: folder
         buildPhase: resources
@@ -39,6 +39,13 @@ targets:
       - name: Build the emulator (iSH-AOK)
         script: |
           "$PROJECT_DIR/scripts/build-engine.sh" "$PLATFORM_NAME" "$ENGINE"
+        basedOnDependencyAnalysis: false
+    postBuildScripts:
+      # A folder reference is copied whole, so what development leaves in Guest (Claude Code's .claude
+      # folders, Python's __pycache__) would ship: take it out of the bundle before it's signed.
+      - name: Tidy the guest files
+        script: |
+          find "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/Guest" \( -name .claude -o -name __pycache__ \) -prune -exec rm -rf {} +
         basedOnDependencyAnalysis: false
     settings:
       base:

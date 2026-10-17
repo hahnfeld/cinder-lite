@@ -1,4 +1,4 @@
-package app.cinder
+package app.cinder.module.phone
 
 import android.content.ComponentName
 import android.content.Context
@@ -19,6 +19,8 @@ import android.os.SystemClock
 import android.system.Os
 import android.util.Log
 import android.widget.Toast
+import app.cinder.MainActivity
+import app.cinder.PhoneAccessibility
 import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku

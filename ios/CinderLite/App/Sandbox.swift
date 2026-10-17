@@ -5,7 +5,7 @@ import Foundation
 ///
 ///     Library/Cinder/
 ///       root/         the Alpine root (fakefs: data/ + meta.db), unpacked once from the bundle
-///       host/bin      /usr/local/bin       helper commands (xdg-open, phone)
+///       host/bin      /usr/local/bin       helper commands (xdg-open, and enabled modules' helpers)
 ///       host/libexec  /usr/local/libexec   setup and launch scripts, Claude's brief and hooks
 ///       host/cinder   /root/.cinder        requests the app watches (notifications)
 ///       host/dl       /usr/local/dl        the verified Claude Code installer, while installing
@@ -19,6 +19,8 @@ final class Sandbox {
     let requests: URL
     let downloads: URL
     let workspace: URL
+    /// Which modules are installed (Modules), one empty file each; cleared with the root.
+    let installed: URL
     private let stamp: URL
 
     private init() {
@@ -32,6 +34,7 @@ final class Sandbox {
         downloads = host.appendingPathComponent("dl")
         workspace = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         stamp = base.appendingPathComponent(".bootstrap-v1")
+        installed = base.appendingPathComponent("modules-installed")
     }
 
     var isBootstrapped: Bool { FileManager.default.fileExists(atPath: stamp.path) }
@@ -96,6 +99,7 @@ final class Sandbox {
         }
         try? fm.removeItem(at: stamp)
         try? fm.removeItem(at: root)
+        try? fm.removeItem(at: installed)   // modules' packages were in the root
         for name in ["claude-installer", "progress", "error", "request"] {
             try? fm.removeItem(at: downloads.appendingPathComponent(name))
         }
@@ -103,20 +107,46 @@ final class Sandbox {
     }
 
     /// The bundled scripts and settings, rewritten every launch (an app update's fixes reach
-    /// existing installs). Each through a temp file and a rename, so a running script keeps its file.
-    private func writeHelpers() throws {
+    /// existing installs) and whenever a module is turned on or off: the base's, then each enabled
+    /// module's (Guest/modules/<id>/bin), while a disabled module's helpers are removed. Claude's
+    /// brief is the base's, the line about modules, then each enabled module's brief.md.
+    func writeHelpers() throws {
         let guest = Bundle.main.url(forResource: "Guest", withExtension: nil)!
-        for (from, to) in [(guest.appendingPathComponent("bin"), bin), (guest.appendingPathComponent("libexec"), libexec)] {
-            for name in try FileManager.default.contentsOfDirectory(atPath: from.path) where !name.hasPrefix(".") {
-                let part = to.appendingPathComponent(".\(name).part")
-                try? FileManager.default.removeItem(at: part)
-                try FileManager.default.copyItem(at: from.appendingPathComponent(name), to: part)
-                // Scripts run as commands; the brief and the settings are only read.
-                let mode = name.hasSuffix(".md") || name.hasSuffix(".json") ? 0o644 : 0o755
-                try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: part.path)
-                _ = try FileManager.default.replaceItemAt(to.appendingPathComponent(name), withItemAt: part)
+        let modules = guest.appendingPathComponent("modules")
+        var dirs = [(guest.appendingPathComponent("bin"), bin), (guest.appendingPathComponent("libexec"), libexec)]
+        for module in Modules.all {
+            let helpers = modules.appendingPathComponent(module.id).appendingPathComponent("bin")
+            if Modules.isOn(module) { dirs.append((helpers, bin)) }
+            else { for name in files(in: helpers) { try? FileManager.default.removeItem(at: bin.appendingPathComponent(name)) } }
+        }
+        for (from, to) in dirs {
+            for name in files(in: from) where name != "cinder-brief.md" {
+                try install(Data(contentsOf: from.appendingPathComponent(name)), as: to.appendingPathComponent(name))
             }
         }
+        var brief = try String(contentsOf: guest.appendingPathComponent("libexec/cinder-brief.md"), encoding: .utf8)
+        brief += Modules.briefLine + "\n"
+        for module in Modules.enabled {
+            brief += try String(contentsOf: modules.appendingPathComponent("\(module.id)/brief.md"), encoding: .utf8)
+        }
+        try install(Data(brief.utf8), as: libexec.appendingPathComponent("cinder-brief.md"))
+    }
+
+    /// A bundled folder's files, without what development leaves around (dotfiles, .claude, __pycache__).
+    private func files(in dir: URL) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { !$0.hasPrefix(".") && $0 != "__pycache__" }.sorted()
+    }
+
+    /// Through a temp file and a rename, so a running script keeps its file.
+    private func install(_ data: Data, as file: URL) throws {
+        let part = file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).part")
+        try data.write(to: part)
+        // Scripts run as commands; the brief and the settings are only read.
+        let name = file.lastPathComponent
+        let mode = name.hasSuffix(".md") || name.hasSuffix(".json") ? 0o644 : 0o755
+        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: part.path)
+        _ = try FileManager.default.replaceItemAt(file, withItemAt: part)
     }
 
     /// The environment every session starts with (Android's prelude, minus its Android parts).
@@ -139,6 +169,6 @@ final class Sandbox {
             // No telemetry, error reports or update check holding up every start (then ~10 s down to ~5 s);
             // cinder-claude runs `claude update` once a day instead.
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        ]
+        ] + Modules.enabled.flatMap(\.environment)
     }
 }

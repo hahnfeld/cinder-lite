@@ -52,7 +52,7 @@ android {
         }
     }
 
-    buildFeatures { aidl = true }   // IShellService, the Shizuku user service's interface
+    buildFeatures { aidl = true }   // IShellService, Phone Use's Shizuku user service interface
 
     // targetSdk 28 is deliberate (see above) and this app is never published to Play.
     lint { disable += "ExpiredTargetSdkVersion" }
@@ -82,10 +82,10 @@ kotlin { jvmToolchain(17) }
 
 dependencies {
     implementation(libs.termux.terminal.view)
-    // Optional adb-shell access through the Shizuku app (⋮ → Shizuku); see ShizukuBridge.
+    // Phone Use: adb-shell access through the Shizuku app (⋮ → Shizuku); see module/phone/ShizukuBridge.
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
     // hev-socks5-tunnel 2.19.0 (MIT), its release AAR as published (sha256 fbbf014c1c4c6d1e0922db88542abd9dc726600473bdfdc8039ed157b4ba02b0):
-    // turns the VPN's packets back into connections for mitmproxy (⋮ → Watch network traffic; see TrafficVpn).
+    // Network Monitor: turns the VPN's packets back into connections for mitmproxy (see module/traffic/TrafficVpn).
     implementation(files("libs/hev-socks5-tunnel-2.19.0.aar"))
 }

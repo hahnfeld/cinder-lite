@@ -94,6 +94,7 @@ final class TerminalController: UIViewController {
     /// tab, from cinder-claude.
     private func start() {
         status.text = Sandbox.shared.isBootstrapped ? nil : "Unpacking Alpine…"
+        Modules.migrate()
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try Sandbox.shared.bootstrap()
@@ -102,6 +103,7 @@ final class TerminalController: UIViewController {
                         try Sandbox.shared.boot()
                         self.booted = true
                         self.status.text = nil
+                        Modules.start()
                         Notifier.shared.start()
                         FileOpener.shared.start(presenter: self)
                         ClaudeInstaller.shared.start()
@@ -123,11 +125,13 @@ final class TerminalController: UIViewController {
         status.text = "Couldn't start the sandbox: \(error.localizedDescription)\n\nCheck the free space, then ⋮ → Reinstall sandbox."
     }
 
-    /// Starts `tab` in a fresh session (ending its old one, if any) and shows it.
-    func launch(_ tab: Tab) {
+    /// Starts `tab` in a fresh session (ending its old one, if any) and shows it: its own command, or
+    /// `argv` (a module's install, in the Shell tab), with `environment` added.
+    func launch(_ tab: Tab, argv: [String]? = nil, environment: [String] = []) {
         guard booted else { return }
         if let old = sessions[tab] {
             sessions[tab] = nil   // its exit, when it comes, is no longer news
+            setups.removeValue(forKey: old.pid)?(false)   // a module install, cut short
             if old.running {
                 CinderKernel.signalSession(old.pid, signal: SIGKILL)
                 old.terminal.destroy()   // a finished one was already (see exited)
@@ -136,7 +140,7 @@ final class TerminalController: UIViewController {
         autocorrect?.forget()
         var pid: Int32 = 0
         do {
-            let terminal = try CinderKernel.startSession(tab.argv, environment: Sandbox.shared.environment, pid: &pid)
+            let terminal = try CinderKernel.startSession(argv ?? tab.argv, environment: Sandbox.shared.environment + environment, pid: &pid)
             terminal.inputFilter = { [weak self] input in self?.filter(input, for: tab) ?? input }
             sessions[tab] = Session(terminal: terminal, pid: pid)
         } catch {
@@ -157,9 +161,19 @@ final class TerminalController: UIViewController {
         showKeyboard()
     }
 
-    /// Ends both sessions (⋮ → Stop); Enter starts one again.
+    /// Ends both sessions, and whatever enabled modules have running (⋮ → Stop); Enter starts one again.
     func stopAll() {
         for (_, s) in sessions where s.running { CinderKernel.signalSession(s.pid, signal: SIGKILL) }
+        for module in Modules.enabled { module.stop() }
+    }
+
+    /// Runs `argv` in the Shell tab, where its output shows, and calls `done` with whether it
+    /// succeeded once it exits. The Shell's own session, if any, is ended for it.
+    private var setups: [Int32: (Bool) -> Void] = [:]
+    func runSetup(_ argv: [String], environment: [String] = [], then done: @escaping (Bool) -> Void) {
+        launch(.shell, argv: argv, environment: environment)
+        guard let pid = sessions[.shell]?.pid else { return done(false) }
+        setups[pid] = done
     }
 
     /// A session's leader exited. Its screen starts over (scrollback is kept) with normal terminal
@@ -169,6 +183,7 @@ final class TerminalController: UIViewController {
         sessions[tab]?.running = false
         KeepAlive.shared.sessionsRunning(sessions.values.contains { $0.running })
         let signal = status & 0x7f, code = (status >> 8) & 0xff
+        setups.removeValue(forKey: pid)?(signal == 0 && code == 0)
         let how = signal != 0 ? "was stopped" : code == 0 ? "exited" : "exited with code \(code)"
         let notice = "\u{1b}[?1049l\u{1b}[0m\u{1b}[?25h\u{1b}[2J\u{1b}[H\(tab.noun) \(how). Press Enter to start it again.\r\n"
         let bytes = Array(notice.utf8)
@@ -229,7 +244,7 @@ final class TerminalController: UIViewController {
             }
             if FileManager.default.fileExists(atPath: picked.path), let data = take(picked),
                let title = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-               let item = self.menuItems().first(where: { $0.title == title }) {
+               let item = (self.menuItems() + self.moduleItems()).first(where: { $0.title == title }) {
                 item.run()
             }
         }
@@ -246,8 +261,8 @@ final class TerminalController: UIViewController {
 
     // MARK: ⋮
 
-    /// ⋮'s items, in order: title, checked (nil when it isn't a toggle), action.
-    private func menuItems() -> [(title: String, checked: Bool?, run: () -> Void)] {
+    /// ⋮'s items, in order; enabled modules add theirs, and `menu` puts Modules before the last.
+    private func menuItems() -> [MenuItem] {
         let other: Tab = shown == .claude ? .shell : .claude
         return [
             (other.title, nil, { [weak self] in self?.show(other) }),
@@ -259,16 +274,75 @@ final class TerminalController: UIViewController {
                 UserDefaults.standard.set(!self.autocorrecting, forKey: Self.autocorrectKey)
             }),
             ("Keep running in background", KeepAlive.shared.enabled, { [weak self] in self?.toggleKeepAlive() }),
-            ("Phone control…", nil, { [weak self] in self?.phoneControl() }),
+        ] + Modules.enabled.flatMap { $0.menuItems(self) } + [
             ("Reinstall sandbox", nil, { [weak self] in self?.reinstall() }),
         ]
     }
 
+    /// ⋮ → Modules: every module, checked while it's on.
+    private func moduleItems() -> [MenuItem] {
+        Modules.all.map { module in
+            let on = Modules.isOn(module)
+            return (module.title, on, { [weak self] in self?.setModule(module, on: !on) })
+        }
+    }
+
     func menu() -> UIMenu {
-        UIMenu(children: menuItems().map { item in
-            UIAction(title: item.title, attributes: item.title == "Reinstall sandbox" ? .destructive : [],
-                     state: item.checked == true ? .on : .off) { _ in item.run() }
-        })
+        func action(_ item: MenuItem, _ attributes: UIMenuElement.Attributes = []) -> UIAction {
+            UIAction(title: item.title, attributes: attributes, state: item.checked == true ? .on : .off) { _ in item.run() }
+        }
+        let items = menuItems()
+        return UIMenu(children: items.dropLast().map { action($0) } + [
+            UIMenu(title: "Modules", children: moduleItems().map { action($0) }),
+            action(items[items.count - 1], .destructive),   // Reinstall sandbox
+        ])
+    }
+
+    /// ⋮ → Modules → a module. Turned on the first time, it's installed in the Shell tab, where the
+    /// progress shows, and stays off if that fails. Turned off, it offers to remove what it installed.
+    /// Either way Claude learns of it when it next starts: its brief is read at launch.
+    private func setModule(_ module: CinderModule, on: Bool) {
+        let nothingToInstall = module.packages.isEmpty && module.install == nil
+        if !on {
+            Modules.set(module, on: false)
+            guard !nothingToInstall && Modules.isInstalled(module) else { return offerRestart(module) }
+            return confirm("Remove what \(module.title) installed?", "Its packages are removed in the Shell tab. " +
+                           "Keep them to turn it back on without downloading again.", "Remove", cancel: "Keep") { [weak self] remove in
+                guard let self else { return }
+                guard remove else { return self.offerRestart(module) }
+                self.runSetup(["/bin/sh", "/usr/local/libexec/cinder-module-install", "--remove"] + module.packages) { removed in
+                    if removed { Modules.markInstalled(module, false) }
+                    self.offerRestart(module)
+                }
+            }
+        }
+        if nothingToInstall || Modules.isInstalled(module) {
+            Modules.markInstalled(module)
+            Modules.set(module, on: true)
+            return offerRestart(module)
+        }
+        confirm("Install \(module.title)?", "It downloads \(module.download ?? "a few packages") and installs them in the " +
+                "Shell tab, once (whatever runs there now is ended).", "Install") { [weak self] install in
+            guard let self, install else { return }
+            let setup = module.install.map { ["CINDER_MODULE_SETUP=\($0)"] } ?? []
+            self.runSetup(["/bin/sh", "/usr/local/libexec/cinder-module-install"] + module.packages, environment: setup) { ok in
+                guard ok else {
+                    return self.alert("\(module.title) didn't install", "It stays off. The Shell tab shows what went " +
+                                      "wrong; ⋮ → Modules → \(module.title) tries again.")
+                }
+                Modules.markInstalled(module)
+                Modules.set(module, on: true)
+                self.offerRestart(module)
+            }
+        }
+    }
+
+    private func offerRestart(_ module: CinderModule) {
+        let on = Modules.isOn(module)
+        confirm("\(module.title) is \(on ? "on" : "off")", "Claude finds out when it next starts. Restart Claude now? " +
+                "That ends this conversation; claude --continue picks it up again.", "Restart Claude", cancel: "Later") { [weak self] restart in
+            if restart { self?.launch(.claude) }
+        }
     }
 
     private func toggleKeepAlive() {
@@ -282,17 +356,10 @@ final class TerminalController: UIViewController {
                   "Cinder Lite → Location, then come back.")
         } else {
             alert("Keep running in background", "While a session runs, Cinder Lite now keeps going when you leave " +
-                  "it, so Claude can finish a task (and `phone` can work the screen). iOS shows the location " +
+                  "it, so Claude can finish a task (or, with Phone Use, work other apps). iOS shows the location " +
                   "indicator meanwhile; Cinder Lite only asks for location to stay awake, and doesn't keep or " +
                   "send it. It uses more battery: turn it off here when you don't need it.")
         }
-    }
-
-    private func phoneControl() {
-        alert("Phone control", "Claude can use apps on this iPhone through iCTRL, a separate open-source app that " +
-              "drives the screen with Apple's UI-testing tools. Setting it up takes a Mac or a sideloading app " +
-              "with developer tools; see the README. Once its runner is going, Claude uses `phone` in the " +
-              "sandbox, and Keep running in background must be on: Cinder Lite is behind the app being used.")
     }
 
     private func reinstall() {
@@ -321,9 +388,18 @@ final class TerminalController: UIViewController {
         present(voice, animated: true)
     }
 
-    private func alert(_ title: String, _ message: String) {
+    func alert(_ title: String, _ message: String) {
         let a = UIAlertController(title: title, message: message, preferredStyle: .alert)
         a.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in self?.showKeyboard() })
+        present(a, animated: true)
+    }
+
+    /// A yes-or-no question; `answer` gets which.
+    private func confirm(_ title: String, _ message: String, _ yes: String, cancel: String = "Cancel",
+                         answer: @escaping (Bool) -> Void) {
+        let a = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        a.addAction(UIAlertAction(title: cancel, style: .cancel) { [weak self] _ in self?.showKeyboard(); answer(false) })
+        a.addAction(UIAlertAction(title: yes, style: .default) { [weak self] _ in self?.showKeyboard(); answer(true) })
         present(a, animated: true)
     }
 }

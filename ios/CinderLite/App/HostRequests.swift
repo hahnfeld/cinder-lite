@@ -71,6 +71,26 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource {
     func previewController(_: QLPreviewController, previewItemAt _: Int) -> QLPreviewItem { file! as NSURL }
 }
 
+/// Modules' requests (CinderModule.requests), each to its module while that's on. A disabled
+/// module's requests are removed unread: the sandbox can write them whether or not it's on.
+final class ModuleRequests {
+    static let shared = ModuleRequests()
+    private var watcher: DirectoryWatcher?
+
+    func start() {
+        guard watcher == nil, Modules.all.contains(where: { !$0.requests.isEmpty }) else { return }
+        watcher = DirectoryWatcher(Sandbox.shared.requests) {
+            for module in Modules.all {
+                for name in module.requests {
+                    let file = Sandbox.shared.requests.appendingPathComponent(name)
+                    guard FileManager.default.fileExists(atPath: file.path), let data = take(file), Modules.isOn(module) else { continue }
+                    module.handle(request: name, data: data)
+                }
+            }
+        }
+    }
+}
+
 /// Claude Code's hooks (cinder-settings.json) write each event to /root/.cinder/notify-request.
 /// Stop notifies only for turns that ran a minute or more; Notification does when Claude needs
 /// something (permission, a question), but not its idle "waiting for your input" reminder, which

@@ -1,4 +1,4 @@
-package app.cinder
+package app.cinder.module.traffic
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -16,6 +16,8 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Log
 import android.widget.Toast
+import app.cinder.MainActivity
+import app.cinder.Sandbox
 import hev.htproxy.TProxyService
 import java.io.File
 import java.net.InetSocketAddress
@@ -33,7 +35,7 @@ import kotlin.concurrent.thread
  * Android's VPN hands this app the packets of the apps being watched. hev-socks5-tunnel (an in-app
  * library) turns them back into connections and hands those to mitmproxy's SOCKS5 port in the
  * sandbox, which records them under /tmp/cinder-traffic for the `traffic` helper (see
- * assets/cinder-traffic.py). This app's own traffic — the sandbox's, and so mitmproxy's way out —
+ * assets/modules/traffic/libexec/cinder-traffic.py). This app's own traffic — the sandbox's, and so mitmproxy's way out —
  * stays outside the VPN, or it would loop.
  *
  * DNS is answered inside the tunnel (hev's mapdns), so mitmproxy sees hostnames, not addresses. Other

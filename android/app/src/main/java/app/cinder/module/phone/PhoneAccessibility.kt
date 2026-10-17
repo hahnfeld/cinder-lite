@@ -1,3 +1,6 @@
+// Phone Use's, like the rest of this folder, but still in app.cinder: Android's Accessibility setting
+// remembers the service by its class name, so a new package would turn it off for everyone who had
+// turned it on.
 package app.cinder
 
 import android.accessibilityservice.AccessibilityService

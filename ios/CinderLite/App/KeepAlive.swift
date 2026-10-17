@@ -30,6 +30,12 @@ final class KeepAlive: NSObject, CLLocationManagerDelegate {
     /// Whether iOS refused location to Cinder Lite (Settings → Cinder Lite → Location to change it).
     var denied: Bool { [.denied, .restricted].contains(manager.authorizationStatus) }
 
+    /// On, and iOS lets it work. Posted as `changed` whenever that may have changed (Phone Use tells
+    /// the sandbox).
+    var allowed: Bool { enabled && authorized }
+    static let changed = Notification.Name("KeepAlive.changed")
+    private var authorized: Bool { [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus) }
+
     override init() {
         super.init()
         manager.delegate = self
@@ -63,11 +69,7 @@ final class KeepAlive: NSObject, CLLocationManagerDelegate {
     }
 
     private func update() {
-        let authorized = [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus)
-        // For the sandbox: `phone start` refuses without it (/root/.cinder/keep-alive).
-        let flag = Sandbox.shared.requests.appendingPathComponent("keep-alive")
-        if enabled && authorized { FileManager.default.createFile(atPath: flag.path, contents: Data("on\n".utf8)) }
-        else { try? FileManager.default.removeItem(at: flag) }
+        NotificationCenter.default.post(name: Self.changed, object: self)
         if enabled && wanted && authorized && !lapsed {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true

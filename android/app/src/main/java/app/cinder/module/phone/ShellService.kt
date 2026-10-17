@@ -1,4 +1,4 @@
-package app.cinder
+package app.cinder.module.phone
 
 import android.content.Context
 import android.hardware.display.DisplayManager

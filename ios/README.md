@@ -68,7 +68,7 @@ starts over from scratch.
 - **Keys row** above the keyboard: `esc`, `tab`, `⇧tab` (Claude Code's mode switch), a sticky `ctrl`
   (orange while armed, applies to the next key), the arrows, 🎤 and ⋮.
 - **⋮ menu**: the other tab, Restart, Stop (ends both sessions), Autocorrect, Keep running in
-  background, Phone control, Reinstall sandbox.
+  background, the items of modules that are on (Phone control…), Modules, Reinstall sandbox.
 - **Autocorrect** (on by default, Claude's prompt only): a misspelled plain word is fixed when you
   type a space or Enter, using iOS's spell checker. Words with dots, slashes, digits or inner
   capitals (`README.md`, `getProp`) are left alone, and backspace right after a fix undoes it.
@@ -90,7 +90,27 @@ battery, so it's off by default: turn it on for long tasks, or for `phone`, and 
 Android's, it never lasts indefinitely: it lapses an hour after you last used the app or Claude last
 finished a turn (four hours into a turn that never says it ended), and opening the app renews it.
 
-## Phone control (optional): Claude uses apps on your iPhone
+## Modules
+
+Out of the box Cinder Lite is a Claude Code runner and nothing more. What goes beyond that comes in
+**modules**, each off until you turn it on in ⋮ → **Modules**. A module that's off adds nothing:
+- no commands in the sandbox;
+- no words in what Claude is told at the start of each session;
+- no menu items;
+- nothing it could open on the phone.
+
+The Android app has three modules: Phone Use, Network Monitor and App Development. The iOS app has
+**Phone Use** so far.
+
+- **Turning one on** adds its commands, its part of Claude's brief and its menu items. A module with
+  packages installs them the first time, in the Shell tab, where you can watch, and asks first; if
+  that fails it stays off, and checking it again retries. Claude reads its brief when it starts, so
+  Cinder Lite offers to restart Claude (`claude --continue` picks the conversation up again).
+- **Turning one off** takes all of that away again, and offers to remove the packages it installed.
+- Installs that used a module before modules existed (Phone Use: paired with iCTRL) have it turned on
+  already.
+
+### Phone Use: Claude uses apps on your iPhone
 
 With [iCTRL](https://github.com/OpenMinis/iCTRL) installed, Claude can use apps on the iPhone: open
 an app, read what's on screen, tap, type and scroll. iCTRL is a separate open-source app whose
@@ -103,7 +123,8 @@ Lite in the background. So:
 1. Install iCTRL as its README describes (sideloaded too, with Developer Mode on), and start its
    runner in the iCTRL app. After each reboot, iCTRL mounts the developer disk image again before
    the runner can start.
-2. Turn on ⋮ → Keep running in background: Claude is in the background while it works.
+2. Turn on ⋮ → Modules → **Phone Use**, and ⋮ → Keep running in background: Claude is in the
+   background while it works.
 3. Ask Claude to do something on the phone. It runs `phone start`; the first time, iCTRL asks
    whether to allow "Cinder Lite": tap **Allow** within about a minute (once; again only if iCTRL
    forgets the key, after 30 days unused or a reinstall). Then Claude opens apps and works through
@@ -135,12 +156,13 @@ same place, so they land even while the screen animates; otherwise they tap its 
 authenticated with the key from that pairing, kept in `/root/.cinder/ictrl.json`, readable by root
 only). Tested against iCTRL's runner (server 1.98.12) in the iOS Simulator.
 
-### The trust model
+#### The trust model
 
 The same as Android's:
 
 - **The sandbox can't reach iOS.** It can't install apps, change settings or read other apps' data.
-  It can open https links (`xdg-open`, for `/login`) and iCTRL's start link, and nothing else.
+  It can open https links (`xdg-open`, for `/login`) and, while Phone Use is on, iCTRL's start link,
+  and nothing else.
   `xdg-open <file>` shows a sandbox file in iOS's preview, which you can share to another app;
   never hidden files (logins, keys).
 - **What's on screen is data, not instructions.** `phone ui` heads every listing with
@@ -180,6 +202,18 @@ open CinderLite.xcodeproj
 The first build compiles iSH-AOK's emulator with meson (`scripts/build-engine.sh`, a few minutes);
 later builds reuse it. The app runs in the iOS Simulator too.
 
+The emulator is built from the submodule as it is, plus `scripts/patches/`, which the build applies to
+copies of the files they change (the submodule stays clean). The one patch adds an `aok_files` option,
+which the build turns off: iSH-AOK otherwise compiles `/AOK`'s regression tests, tools, docs and
+add-ons into the binary, about 50 MB that Cinder Lite never uses.
+
+**Adding a module** (as on Android):
+1. A class conforming to `CinderModule` in `CinderLite/App/Modules/<Name>/`, listed in
+   `Modules.all`.
+2. Its sandbox files in `CinderLite/Guest/modules/<id>/`: `bin/` for its commands and `brief.md`
+   for its part of Claude's brief.
+3. Everything else it changes in the app, behind `apply(on:)`, so it's off until it's turned on.
+
 ### Layout
 
 | Path | What |
@@ -187,9 +221,12 @@ later builds reuse it. The app runs in the iOS Simulator too.
 | `project.yml` | the Xcode project (XcodeGen) |
 | `ish-AOK/` | iSH-AOK, a submodule pinned to the commit Cinder Lite is tested with |
 | `scripts/build-engine.sh` | builds iSH-AOK's emulator libraries for the Simulator or iPhone |
+| `scripts/patches/` | Cinder Lite's changes to iSH-AOK's build, applied by `build-engine.sh` |
 | `CinderLite/Engine/` | the boot sequence (`CinderKernel`) and iSH-AOK's terminal, adapted |
 | `CinderLite/App/` | the app: tabs, keys, menu, setup, autocorrect, notifications, keep-alive |
-| `CinderLite/Guest/` | what the sandbox sees in `/usr/local`: setup, Claude's brief and hooks, `phone`, `xdg-open` |
+| `CinderLite/App/Modules/` | the module interface and registry (`Module.swift`), and each module (`PhoneUse/`) |
+| `CinderLite/Guest/` | what the sandbox sees in `/usr/local`: setup, Claude's brief and hooks, `xdg-open` |
+| `CinderLite/Guest/modules/` | each module's commands and brief (`phone/`: `phone`), there only while it's on |
 | `CinderLite/Resources/` | the Alpine root, the terminal page, the symbols font |
 | `CinderLite/Licenses/` | license texts and third-party notices, shipped in the app |
 

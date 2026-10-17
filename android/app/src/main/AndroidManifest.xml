@@ -38,11 +38,16 @@
             android:name=".SessionService"
             android:exported="false" />
 
-        <!-- The phone screen Claude drives (`phone` in the sandbox): a picture-in-picture window
-             showing a virtual display. Its own task, so the PiP never takes the terminal with it;
-             configChanges, since recreating it would close the display and the apps on it. -->
+        <!-- Modules' components (app/cinder/module/) are on only while their module is (Modules.set),
+             so one that's off can't run or show up in Settings. Most start android:enabled="false"
+             here; the exceptions say why. -->
+
+        <!-- Phone Use: the phone screen Claude drives (`phone` in the sandbox), a picture-in-picture
+             window showing a virtual display. Its own task, so the PiP never takes the terminal with
+             it; configChanges, since recreating it would close the display and the apps on it. -->
         <activity
-            android:name=".PhoneScreenActivity"
+            android:name=".module.phone.PhoneScreenActivity"
+            android:enabled="false"
             android:exported="false"
             android:label="Phone screen"
             android:launchMode="singleTask"
@@ -51,8 +56,12 @@
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection" />
 
-        <!-- How Claude reads and operates the phone screen. The user turns it on in Android's
-             Accessibility settings; it only reads the phone screen, and only when asked. -->
+        <!-- Phone Use: how Claude reads and operates the phone screen. The user turns it on in
+             Android's Accessibility settings; it only reads the phone screen, and only when asked.
+             Its class stays app.cinder.PhoneAccessibility: that's the name the setting remembers.
+             Enabled here, and switched off at first launch if Phone Use is: Android drops a disabled
+             service from that setting when the app updates, so an update that shipped it disabled
+             would turn it off for everyone who had turned it on. -->
         <service
             android:name=".PhoneAccessibility"
             android:exported="true"
@@ -66,10 +75,11 @@
                 android:resource="@xml/phone_accessibility" />
         </service>
 
-        <!-- Watching network traffic (⋮ → Watch network traffic): the user turns it on, Android asks
-             for VPN consent the first time and shows a key icon while it runs. -->
+        <!-- Network Monitor (⋮ → Watch network traffic): the user turns it on, Android asks for VPN
+             consent the first time and shows a key icon while it runs. -->
         <service
-            android:name=".TrafficVpn"
+            android:name=".module.traffic.TrafficVpn"
+            android:enabled="false"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
@@ -85,7 +95,11 @@
             android:exported="false"
             android:grantUriPermissions="true" />
 
-        <!-- Receives Shizuku's binder, for the optional adb-shell access (⋮ → Shizuku). -->
+        <!-- Phone Use: receives Shizuku's binder, for the optional adb-shell access (⋮ → Shizuku).
+             Always enabled, unlike the module's other components: Shizuku hands its binder over when
+             this process starts, so one enabled later would miss it until the app restarted. Only
+             the system can call it (INTERACT_ACROSS_USERS_FULL), and nothing uses the binder unless
+             Phone Use and ⋮ → Shizuku are both on. -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

@@ -1,0 +1,4 @@
+#!/bin/sh
+# jadx, as apk-tools-install unpacks it.
+[ -x /usr/local/jadx/bin/jadx ] || { echo "jadx isn't installed - run apk-tools-install" >&2; exit 1; }
+exec /usr/local/jadx/bin/jadx "$@"

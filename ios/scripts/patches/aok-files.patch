@@ -1,0 +1,111 @@
+Cinder Lite's change to iSH-AOK. build-engine.sh applies it to copies of these files and leaves the
+submodule as it is. It adds an aok_files option, which Cinder Lite turns off, so the binary doesn't
+carry /AOK's tests, tools, docs, book and bundled add-ons (~50 MB) that the app never uses.
+
+--- a/meson.build
++++ b/meson.build
+@@ -395,8 +395,15 @@
+ # listed source is a proper build dependency.
+ fs_mod = import('fs')
+ python = find_program('python3')
++# aok_files=disabled builds the tables below from the empty manifest instead: an
++# app that embeds the kernel and boots a root of its own has no use for the
++# /AOK tests, tools, docs, book or bundled add-ons, about 50 MB of binary.
++# /AOK itself, /AOK/native and the terminfo table are unaffected.
++aok_files = get_option('aok_files').allowed()
++aok_none = 'fs/aok-libs-empty.manifest'
+ aok_test_srcs = []
+-foreach line : fs_mod.read('fs/aok-tests.manifest').strip().split('\n')
++aok_tests_manifest = aok_files ? 'fs/aok-tests.manifest' : aok_none
++foreach line : fs_mod.read(aok_tests_manifest).strip().split('\n')
+     entry = line.strip()
+     if entry != '' and not entry.startswith('#')
+         aok_test_srcs += files('tests/manual' / entry.split()[0])
+@@ -404,14 +411,15 @@
+ endforeach
+ aok_generated_tests = custom_target('aok_generated_tests',
+     output: 'aok_generated_tests.inc',
+-    input: [files('tools/gen-aokfs.py', 'fs/aok-tests.manifest')] + aok_test_srcs,
++    input: [files('tools/gen-aokfs.py', aok_tests_manifest)] + aok_test_srcs,
+     command: [python, '@INPUT0@', '@INPUT1@',
+-              meson.current_source_dir() / 'tests' / 'manual', '@OUTPUT@'])
++              meson.current_source_dir() / (aok_files ? 'tests/manual' : 'fs'), '@OUTPUT@'])
+ 
+ # Same mechanism for the /AOK/tools table, from fs/aok-tools.manifest with
+ # sources under opt/AOK/tools/. Files are served read-only at /AOK/tools/<name>.
+ aok_tool_srcs = []
+-foreach line : fs_mod.read('fs/aok-tools.manifest').strip().split('\n')
++aok_tools_manifest = aok_files ? 'fs/aok-tools.manifest' : aok_none
++foreach line : fs_mod.read(aok_tools_manifest).strip().split('\n')
+     entry = line.strip()
+     if entry != '' and not entry.startswith('#')
+         aok_tool_srcs += files('opt/AOK/tools' / entry.split()[0])
+@@ -419,7 +427,7 @@
+ endforeach
+ aok_generated_tools = custom_target('aok_generated_tools',
+     output: 'aok_generated_tools.inc',
+-    input: [files('tools/gen-aokfs.py', 'fs/aok-tools.manifest')] + aok_tool_srcs,
++    input: [files('tools/gen-aokfs.py', aok_tools_manifest)] + aok_tool_srcs,
+     command: [python, '@INPUT0@', '@INPUT1@',
+               meson.current_source_dir() / 'opt' / 'AOK' / 'tools', '@OUTPUT@',
+               '/tools', '_tools'])
+@@ -427,7 +435,8 @@
+ # Same mechanism for the /AOK/docs table, from fs/aok-docs.manifest with
+ # sources under opt/AOK/docs/. Files are served read-only at /AOK/docs/<name>.
+ aok_doc_srcs = []
+-foreach line : fs_mod.read('fs/aok-docs.manifest').strip().split('\n')
++aok_docs_manifest = aok_files ? 'fs/aok-docs.manifest' : aok_none
++foreach line : fs_mod.read(aok_docs_manifest).strip().split('\n')
+     entry = line.strip()
+     if entry != '' and not entry.startswith('#')
+         aok_doc_srcs += files('opt/AOK/docs' / entry.split()[0])
+@@ -435,7 +444,7 @@
+ endforeach
+ aok_generated_docs = custom_target('aok_generated_docs',
+     output: 'aok_generated_docs.inc',
+-    input: [files('tools/gen-aokfs.py', 'fs/aok-docs.manifest')] + aok_doc_srcs,
++    input: [files('tools/gen-aokfs.py', aok_docs_manifest)] + aok_doc_srcs,
+     command: [python, '@INPUT0@', '@INPUT1@',
+               meson.current_source_dir() / 'opt' / 'AOK' / 'docs', '@OUTPUT@',
+               '/docs', '_docs'])
+@@ -446,7 +455,8 @@
+ # step. Nested paths (appendices/) are fine: gen-aokfs.py derives the
+ # intermediate directory entries.
+ aok_book_srcs = []
+-foreach line : fs_mod.read('fs/aok-book.manifest').strip().split('\n')
++aok_book_manifest = aok_files ? 'fs/aok-book.manifest' : aok_none
++foreach line : fs_mod.read(aok_book_manifest).strip().split('\n')
+     entry = line.strip()
+     if entry != '' and not entry.startswith('#')
+         aok_book_srcs += files('docs/book' / entry.split()[0])
+@@ -454,7 +464,7 @@
+ endforeach
+ aok_generated_book = custom_target('aok_generated_book',
+     output: 'aok_generated_book.inc',
+-    input: [files('tools/gen-aokfs.py', 'fs/aok-book.manifest')] + aok_book_srcs,
++    input: [files('tools/gen-aokfs.py', aok_book_manifest)] + aok_book_srcs,
+     command: [python, '@INPUT0@', '@INPUT1@',
+               meson.current_source_dir() / 'docs' / 'book', '@OUTPUT@',
+               '/docs/book', '_book'])
+@@ -487,6 +497,9 @@
+                    # tools/build-bundled.sh, so setup scripts link instead of
+                    # compiling on the device.
+                    ['fs/aok-bundled.manifest', 'opt/AOK/bundled', '/bundled']]
++if not aok_files
++    aok_libs_groups = [aok_libs_groups[0]]   # terminfo only
++endif
+ if have_zsh
+     aok_libs_groups += [['fs/aok-zsh-functions.manifest', 'deps/zsh', '/native/libs/zsh']]
+ endif
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -87,3 +87,9 @@
+ # reason to leave it out, and scripts want a small fast sh.
+ option('native_dash', type: 'feature', value: 'enabled',
+        description: 'Compile dash in as a native program, reachable as dash and sh')
++
++# What /AOK serves from the binary: tests/manual, the tools, docs and book, and
++# the prebuilt /AOK/bundled add-ons, about 50 MB together. An app that only
++# boots a root of its own can leave them out.
++option('aok_files', type: 'feature', value: 'enabled',
++       description: 'Embed /AOK/tests, /AOK/tools, /AOK/docs (with the book) and /AOK/bundled')

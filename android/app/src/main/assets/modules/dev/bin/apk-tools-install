@@ -34,16 +34,8 @@ else
   echo "  have jadx"
 fi
 
-# Wrappers so the usual names work regardless of where the jars live.
-cat > /usr/local/bin/apktool <<'EOF'
-#!/bin/sh
-exec java -jar /usr/local/lib/apktool.jar "$@"
-EOF
-cat > /usr/local/bin/jadx <<'EOF'
-#!/bin/sh
-exec /usr/local/jadx/bin/jadx "$@"
-EOF
-chmod 755 /usr/local/bin/apktool /usr/local/bin/jadx
+# The apktool and jadx commands are wrappers that come with App Development (Cinder Lite writes
+# them into /usr/local/bin while the module is on), so the usual names work wherever these live.
 
 echo
 echo "==> JVM check"

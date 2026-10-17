@@ -59,10 +59,13 @@ static ssize_t url_write(struct fd *UNUSED(fd), const void *buf, size_t size) {
     // `echo youtube.com > /dev/url` says EINVAL instead of failing silently.
     if (url == nil || url.scheme == nil || url.scheme.length == 0)
         return _EINVAL;
-    // Cinder Lite: web pages, and iCTRL's runner (`phone start`), only. Anything in the sandbox can
-    // write here, and other schemes reach payment, messaging and other apps' deep links.
+    // Cinder Lite: web pages, plus the schemes enabled modules need (Phone Use: ictrl, for iCTRL's
+    // runner), only. Anything in the sandbox can write here, and other schemes reach payment,
+    // messaging and other apps' deep links. Modules publish theirs in the defaults (Modules.swift),
+    // which the sandbox can't write.
     NSString *scheme = url.scheme.lowercaseString;
-    if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"ictrl"])
+    NSArray<NSString *> *allowed = [NSUserDefaults.standardUserDefaults stringArrayForKey:@"urlSchemes"] ?: @[];
+    if (![scheme isEqualToString:@"https"] && ![allowed containsObject:scheme])
         return _EPERM;
 
     __block BOOL opened = NO;
