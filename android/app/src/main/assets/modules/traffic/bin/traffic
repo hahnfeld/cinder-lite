@@ -94,11 +94,28 @@ def status():
         return "not watching (traffic start starts a capture)"
 
 
+# The note cinder-traffic.py leaves when an app refuses the handshake (it then passes that host
+# through unread). "HTTPS readable" means only that the phone trusts the certificate; an app that
+# pins it or doesn't opt into user-added CAs still refuses, which only shows once it connects.
+REFUSED = re.compile(r"(rejected|doesn't accept) Cinder Lite's certificate")
+
+
+def refused_note():
+    hosts = {e["host"] for e in entries() if "host" in e and REFUSED.search(e.get("note", ""))}
+    if not hosts:
+        return ""
+    return (f"{len(hosts)} host(s) refused the certificate: those apps pin it or don't accept "
+            "user-added CAs, so only their hostnames show (listed above) — not something to work around")
+
+
 def listing(filt):
     rows = [(n, line(n, e)) for n, e in enumerate(entries(), 1)]
     if filt:
         rows = [r for r in rows if filt.lower() in r[1].lower()]
     print(f"== {len(rows)} requests · {DATA} · {status()}")
+    note = refused_note()
+    if note:
+        print(f"-- {note}")
     if len(rows) > 200:
         print(f"(the last 200; narrow it down with traffic <filter>)")
     for _, text in rows[-200:]:
@@ -196,6 +213,9 @@ def main(args):
         show(int(args[1]))
     elif cmd == "status":
         print(status())
+        note = refused_note()
+        if note:
+            print(note)
     elif cmd == "start":
         apps = args[1:]
         if any(not re.fullmatch(r"[A-Za-z][\w]*(\.[A-Za-z_][\w]*)+", a) for a in apps):
