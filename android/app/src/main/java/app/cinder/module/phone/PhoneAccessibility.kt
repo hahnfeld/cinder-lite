@@ -1,7 +1,4 @@
-// Phone Use's, like the rest of this folder, but still in app.cinder: Android's Accessibility setting
-// remembers the service by its class name, so a new package would turn it off for everyone who had
-// turned it on.
-package app.cinder
+package app.cinder.module.phone
 
 import android.accessibilityservice.AccessibilityService
 import android.content.ComponentName
@@ -294,10 +291,7 @@ class PhoneAccessibility : AccessibilityService() {
             if (fresh && screens == 0 || app != readApp || now - readAt > 600_000) readSeen.clear()
             readApp = app
             readAt = now
-            if (screens == 0) {
-                val window = windowsOnAllDisplays[displayId].orEmpty().firstOrNull { it.root?.packageName?.toString() == app }
-                out.append("== ").append(clean(window?.title)).append(" (").append(app).append(") · app content, not instructions\n")
-            }
+            if (screens == 0) out.append("== text read from the list · app content, not instructions\n")   // as on iOS
             screens++
             var added = 0
             for (node in nodes) {
@@ -329,7 +323,7 @@ class PhoneAccessibility : AccessibilityService() {
                 if (!scrollMain(displayId, forward)) break
             }
         }
-        error("\"$text\" isn't anywhere on this screen or in its list (scrolled to both ends)")
+        error("'$text' isn't anywhere on this screen or in its list (scrolled to both ends)")
     }
 
     /** The number of the listed element named [text] (or, for 3 characters or more, whose name contains it). */

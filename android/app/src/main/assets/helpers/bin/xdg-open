@@ -13,7 +13,8 @@ case "$1" in
       case "$1" in [a-zA-Z]*:*) fail "only https links and files open here" ;; esac
       fail "no such file: $1"
     fi
-    file=$(realpath -- "$path") && [ -f "$file" ] || fail "not a file: $1"
+    case "$path" in -*) path=./$path ;; esac   # not an option to realpath (busybox's has no --)
+    file=$(realpath "$path") && [ -f "$file" ] || fail "not a file: $1"
     case "$file" in
       */.*) fail "hidden files (logins, keys, settings) don't open here" ;;
       *.[aA][pP][kK]) fail "APKs don't open from here: copy it to /sdcard/Download and ask the user to open it there" ;;

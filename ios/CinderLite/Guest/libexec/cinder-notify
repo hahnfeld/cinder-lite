@@ -1,0 +1,5 @@
+#!/bin/sh
+# Claude Code's notification hooks: hands the event (JSON on stdin) to the app, which shows it as a phone
+# notification. Written then renamed, so the app never reads half of one.
+t=/root/.cinder/notify-request.$$.tmp
+cat > "$t" && mv "$t" /root/.cinder/notify-request

@@ -1,4 +1,4 @@
-"""mitmproxy add-on for Cinder Lite's "Watch network traffic" (TrafficVpn starts mitmdump with it).
+"""mitmproxy add-on for Cinder Lite's Network Monitor (TrafficVpn starts mitmdump with it).
 
 - HTTPS is decrypted only once the user has trusted Cinder Lite's certificate in Settings (the app
   then leaves /tmp/cinder-traffic/decrypt). Until then every connection passes through untouched
@@ -6,6 +6,7 @@
 - Most apps don't accept a user-installed certificate. When one rejects it, that host passes
   through untouched from then on, so the app keeps working; its entries say so.
 - DNS over TLS (port 853) always passes through: the phone's own resolver would refuse it.
+- Once mitmproxy is listening it leaves /tmp/cinder-traffic/ready, which the app waits for.
 - Each request is summarised in index.jsonl, for the `traffic` helper; the whole flows are in flows,
   written here rather than by save_stream_file, which buffers them out of the helper's sight.
 """
@@ -17,6 +18,11 @@ from mitmproxy import io
 
 DIR = "/tmp/cinder-traffic"
 refused = set()   # hosts whose apps rejected the certificate
+
+
+def running():
+    # The proxy's port is bound by now: the app waits for this before the VPN goes up.
+    open(f"{DIR}/ready", "w").close()
 
 
 def note(entry):

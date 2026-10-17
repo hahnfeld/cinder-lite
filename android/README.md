@@ -103,8 +103,8 @@ the 32-bit proot loader.
 - **The real Claude Code TUI** — model picker, permission prompts, `/resume`, slash commands and
   everything else come from Claude Code itself
 - **Always the latest Claude Code** — first run installs npm's current `linux-arm64-musl` release
-  (checked against its sha512) through Claude Code's own `claude install`; after that Claude Code
-  keeps itself up to date
+  (checked against its sha512) through Claude Code's own `claude install`; after that the app runs
+  `claude update` once a day
 - **Phone files** — grant storage access once and the phone's shared storage is `/sdcard` inside
   the sandbox; ask Claude to save things to `/sdcard/Download`
 - **Survives being backgrounded** — a foreground service and wake lock hold the process, since the
@@ -112,11 +112,15 @@ the 32-bit proot loader.
 - **Phone notifications from Claude** — while the app isn't on screen, Claude Code's alerts when it
   needs you (permission requests, questions) and "finished" for turns of a minute or more become
   phone notifications, via hooks
-  passed with `--settings`; your own Claude settings are untouched
+  passed with `--settings` (`cinder-settings.json`, which hands each event to the app through
+  `cinder-notify`); your own Claude settings are untouched. Android 13+ starts Cinder Lite with
+  notifications off and doesn't let it ask, so the first launch offers to open its notification
+  settings, once
 - **⋮ menu** — switch between Claude and a Shell (bash in the same sandbox; both keep running and
   keep their scrollback) · Restart the one you're looking at · Stop · Autocorrect (on/off) ·
-  a module's own items while it's on (Shizuku, Watch network traffic) · Modules · Reinstall sandbox
-  (a clean reset that keeps your login and `/workspace`)
+  Modules · Reinstall sandbox
+  (a clean reset that keeps your login and `/workspace`, after you confirm; modules whose downloads
+  it deletes come back off)
 - **Package management without root** — `apk add`, `npm -g`, `pip install`
 - **Optional modules** — each off until you turn it on in ⋮ → Modules, when it downloads what it
   needs; see [below](#modules):
@@ -132,8 +136,8 @@ is ~240 MB, plus the rootfs and base tools). Network Monitor adds about 50 MB; A
 
 **Trust model:** Claude Code and anything it runs can read and write everything under `/sdcard`
 once storage access is granted, and can reach the network. That's the point — but use Claude Code's
-own permission prompts accordingly. With Phone Use's Shizuku switch on, it also has adb-shell power
-([see below](#be-deliberate-about-turning-it-on)). While you're watching network traffic, it can read
+own permission prompts accordingly. With Phone Use on, it also has adb-shell power
+([see below](#be-deliberate-about-turning-it-on)). While Network Monitor is on, it can capture and read
 what your apps send ([see below](#what-claude-sees)).
 
 <br>
@@ -183,7 +187,6 @@ denies hard links in an app's storage, and apk commits its database through one.
 database apk forgot everything it installed, so `apk del` and `apk upgrade` didn't work and each
 `apk add` reinstalled shared dependencies. Cinder Lite runs proot with `--link2symlink`, as Termux's
 proot-distro does, which emulates hard links with symlinks, and apk keeps its records.
-Installs from before this fix get their base packages installed, and recorded, again on the next launch.
 
 ### 6. A long linker path can panic Android 15 kernels
 
@@ -226,15 +229,16 @@ A module that's off isn't there for Claude: its commands aren't in the sandbox, 
 doesn't mention it (only that it exists and where to turn it on), and its parts of the app are
 switched off in Android too, so its accessibility service doesn't show in Settings and its VPN
 can't start. Turning one on downloads what it needs, the first time only, then offers to restart
-Claude so it learns about it. Turning one off asks whether to delete those downloads too.
+Claude so it learns about it. Turning one off asks whether to delete those downloads too. If its
+downloads go missing (⋮ → Reinstall sandbox deletes them), Cinder Lite turns it off at the next start
+and says so; turning it on again downloads them again.
 
 ### Phone Use
 
 adb-shell access for the sandbox through Shizuku, and a phone screen Claude operates apps on.
-Nothing to download: its helpers run on the base Python. Shizuku is a switch of its own inside it
-(⋮ → Shizuku, shown while Phone Use is on), since it hands the sandbox adb-shell power. Turning
-Phone Use off turns Shizuku off and takes its accessibility service out of Settings, so after
-turning it back on, you turn both on again.
+Nothing to download: its helpers run on the base Python. Its checkbox is the only switch: turning
+it on asks for Shizuku's permission and for the phone screen's accessibility service, and turning
+it off ends both, so the sandbox loses adb-shell power and the service leaves Settings.
 
 Inside the sandbox, Claude and the shell run as Cinder Lite's own app user, which Android gives very
 few rights. So the Android system tools don't work there: `pm` for packages, `am` for activities,
@@ -281,9 +285,8 @@ They don't allow reading other apps' private data or changing the system partiti
 1. Install Shizuku from [Google Play](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)
    or [GitHub](https://github.com/RikkaApps/Shizuku/releases). Start it via Wireless debugging, as
    its app walks you through.
-2. In Cinder Lite: ⋮ → **Modules** → **Phone Use**, then ⋮ → **Shizuku**, and allow Cinder Lite in
-   Shizuku's permission dialog. The setting is remembered, and the menu item shows a check while
-   it's on. Turning Phone Use off turns Shizuku off too.
+2. In Cinder Lite: ⋮ → **Modules** → **Phone Use**, and allow Cinder Lite in Shizuku's permission
+   dialog. If Shizuku wasn't running yet, Cinder Lite says so; start it and come back.
 3. In the sandbox:
 
    ```sh
@@ -297,8 +300,7 @@ They don't allow reading other apps' private data or changing the system partiti
    `rish` exits with the command's exit status, and Ctrl-C stops the command on the phone too.
 
 Claude knows about all this: ask it something like *"how many apps are installed?"* or *"turn on
-dark mode"* and it uses `rish` on its own. If Shizuku support is off or Shizuku isn't running, it
-tells you what to do.
+dark mode"* and it uses `rish` on its own. If Shizuku isn't running, it tells you what to do.
 
 If you start Shizuku while Cinder Lite is open, switch to another app and back: Shizuku hands its
 connection to an app when the app comes to the front. Your sessions keep running.
@@ -364,7 +366,7 @@ sandbox   rish            exits with the command's exit status
 
 #### The phone screen: Claude drives apps in a picture-in-picture window
 
-With Shizuku on, Claude can also use apps for you, on a **separate virtual screen** shown in a
+With Phone Use on, Claude can also use apps for you, on a **separate virtual screen** shown in a
 picture-in-picture window that floats over everything, like a video. The apps it opens run there,
 not on your screen, so you can keep using your phone, watch what Claude is doing, drag the window
 anywhere, or expand it to take it over. Ask something like *"open Settings on the phone screen and tell me
@@ -404,15 +406,15 @@ enter, tab, del, space, letters and digits.
 `phone ui` reads the screen through Android's accessibility API, the same way a screen reader does,
 so Claude works from real buttons and text fields rather than guessing from pictures. For that, turn
 on **Cinder Lite phone screen** in Settings → Accessibility once. Cinder Lite offers to take you there
-when you turn Shizuku on, and if Claude tries the phone screen without it, a message on the phone
+when you turn Phone Use on, and if Claude tries the phone screen without it, a message on the phone
 says what to turn on (on a sideloaded install Android may first call it a restricted setting: App
 info → ⋮ → Allow restricted settings). Until then Claude can still use `phone shot` and
 coordinates. The service only reads the phone screen, and only when a `phone` command asks.
 
-**Taking over.** Expand the window to full size and the phone screen is yours: touches go to its
-apps and Back is its Back. Claude's next action waits until you give it back, then tells Claude
-the screen may have changed. Swipe home or switch apps to shrink it back into its small window
-without closing it.
+**Taking over.** Tap the window, then its expand button, and the phone screen is yours: touches go
+to its apps and Back is its Back. Claude's next action waits until you give it back, then tells
+Claude the screen may have changed. To give it back, tap **Hand back to Claude** in the bar above
+it, or swipe home or switch apps: it shrinks back into its small window without closing.
 
 How it works: Cinder Lite's Shizuku service creates the virtual display with adb-shell privileges,
 the same way scrcpy's `--new-display` does, and the display draws straight into the PiP window, with
@@ -421,7 +423,7 @@ service, without starting a process for each (`phone key` only sends keys an app
 power, volume or media keys, which Android applies phone-wide). The display has its own focus and
 no keyboard, so taps and typing there never reach your screen, and yours never reach it. Closing
 the window (its ✕, a swipe, or `phone stop`) closes the display and the apps on it; they don't move
-onto your screen. Turning Shizuku off closes it too.
+onto your screen. Turning Phone Use off closes it too.
 
 Limits:
 
@@ -449,33 +451,36 @@ and in files as data rather than instructions, and to check with you before send
 installing or changing security settings; that's guidance, not a guarantee against a page or app
 built to mislead it.
 
-Turn it off when you don't need it: ⋮ → **Shizuku** again. Code in the sandbox runs as the app
-itself, so it could turn that switch back on; revoking Cinder Lite in the Shizuku app is the off
+Turn it off when you don't need it: ⋮ → **Modules** → **Phone Use** again. Code in the sandbox runs
+as the app itself, so it could turn that switch back on; revoking Cinder Lite in the Shizuku app is the off
 switch nothing inside can undo.
 
 ### Network Monitor
 
 Shows Claude (and you) what the phone's apps send and receive: every request, its headers and body,
-and the response. It's the same thing Reqable, HTTP Toolkit and PCAPdroid do, on your own phone and
-only while you have it on. Ask Claude things like "what does
+and the response. It's the same thing Reqable, HTTP Toolkit and PCAPdroid do, on your own phone.
+Its checkbox gets it ready; captures then run from `traffic start` to `traffic stop`, which Claude
+uses when you ask it about network traffic (and you can, in the Shell). Ask Claude things like "what does
 this app send when I tap Sync?" or "why does this page load slowly?".
 
 **Turning it on.** ⋮ → **Modules** → **Network Monitor** installs
 [mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`, about 50 MB and a minute) and
-makes a certificate for it, named *Cinder Lite*. Then ⋮ → **Watch network traffic** starts watching.
-The first time:
+makes a certificate for it, named *Cinder Lite*. Then it asks for the two things only you can
+grant:
 
 1. To read HTTPS, Android needs you to trust that certificate. Since Android 11 no app can do this
    for you, or even open the screen for it, so Cinder Lite saves *Cinder Lite certificate.crt* to
    Downloads and opens Settings: search for **CA certificate**, tap **Install anyway**, and pick the
    file. Android asks you to set a screen lock first if there isn't one. Back in Cinder Lite it
    notices the certificate and carries on. **Without HTTPS** skips this: you then see which hosts
-   apps connect to, but not what they send.
-2. Android asks once whether Cinder Lite may set up a VPN.
+   apps connect to, but not what they send; trusting it later makes HTTPS readable from the next
+   capture on.
+2. Android asks once whether Cinder Lite may set up a VPN. Saying no (or Cancel on the certificate)
+   leaves Network Monitor off.
 
-After that it starts at a tap. While it's on, Android shows a key icon in the status bar and Cinder
-Lite a notification with **Stop**. ⋮ → **Watch network traffic** again, or ⋮ → **Stop**, also
-stops it, as does disconnecting the VPN in Settings.
+Then it's ready. While a capture runs, Android shows a key icon in the status bar and Cinder Lite a
+notification with **Stop**. That **Stop**, ⋮ → **Stop**, disconnecting the VPN in Settings or turning
+Network Monitor off also ends it.
 
 **What it can read.** HTTPS is readable only from apps that accept certificates you add: Chrome,
 apps you build yourself in debug mode, and apps that opt in. Most other apps refuse such a
@@ -484,7 +489,7 @@ on, so the app keeps working (after one failed connection) and you still see the
 pin their certificates refuse it too. There's no way around this without root, and Cinder Lite
 doesn't try.
 
-**While it's on**, calls, some games and anything else using UDP, other than DNS, won't get through:
+**While a capture runs**, calls, some games and anything else using UDP, other than DNS, won't get through:
 mitmproxy's proxy only carries TCP. Browsers fall back from QUIC to ordinary HTTPS on their own.
 
 #### What Claude sees
@@ -495,10 +500,11 @@ Claude reads the capture with `traffic` (`traffic`, `traffic show N`, `traffic h
   forms and JSON. That's a safeguard against them landing in Claude's context, not a wall: the full
   capture is in the sandbox (`/tmp/cinder-traffic`), which Claude can read. Claude is told to leave
   that alone unless you ask.
-- `traffic start` (all apps) or `traffic start com.example.app` (only those) lets Claude ask to
-  watch. Cinder Lite then asks you on screen every time, naming the apps (through a notification
-  when it isn't open); nothing starts without your tap, and an ask you leave for two minutes lapses.
-  `traffic stop` needs no one's say-so.
+- `traffic start` (all apps) or `traffic start com.example.app` (only those) starts a capture, at
+  once: turning Network Monitor on was your go-ahead. Cinder Lite's own traffic can't be captured
+  (it's how the capture reaches the network), so `traffic start app.cinderlite` is refused. `traffic stop` ends it. Claude is told to
+  capture only when you ask it about network traffic, and to stop when it's done. Turning Network
+  Monitor on or off is yours alone, in ⋮ → Modules.
 - `traffic save` writes everything, unredacted, to a HAR file in `/sdcard/Download` that opens in
   Chrome DevTools, Charles or Reqable.
 
@@ -508,8 +514,8 @@ in `/root/.mitmproxy`) could read the HTTPS of apps that accept it.
 
 #### How it works
 
-Android's `VpnService` hands Cinder Lite the packets of the apps being watched (every app but Cinder
-Lite itself, or just the ones Claude named). [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)
+Android's `VpnService` hands Cinder Lite the packets of the apps being captured (every app but
+Cinder Lite itself, or just the ones named). [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel)
 (MIT, about 350 KB in the APK) turns them back into connections and hands them to `mitmdump` in the
 sandbox over SOCKS5 on `127.0.0.1`, with a password made fresh each time so other apps can't use
 it; if something else is already listening on that port, it won't start. DNS is answered inside the tunnel, so mitmproxy sees hostnames rather than addresses. Cinder
@@ -533,7 +539,9 @@ own libraries, so allow a few minutes on wifi:
 - **APK tools** (`apk-tools-install`): apktool (with `baksmali` and `smali` shims) and jadx, on
   Alpine's JDK.
 
-If a piece goes missing later, its installer puts it back when run. Turning the module off removes
+To install an APK it built, Claude uses `rish` if Phone Use is on (`pm install`, the APK piped in
+on stdin), and otherwise copies it to Downloads for you to open. If a piece goes missing later, its
+installer puts it back when run. Turning the module off removes
 the commands from Claude's sight; you can keep the downloads, or delete them.
 
 <br>
@@ -584,14 +592,15 @@ Claude Code login out of the app's storage.
 under `app/src/main/assets/modules/<id>/`: `bin/` (helpers, on PATH while it's on), `libexec/`
 (other files for the sandbox) and `brief.md` (what Claude is told about it). Its Kotlin object
 implements `Module` (`module/Module.kt`), overriding what it needs: an install for the first time
-it's turned on, prelude lines, request files, menu items, activity hooks. List it in `Modules.all`.
+it's turned on, prelude lines, request files, activity hooks. List it in `Modules.all`.
 Manifest components only it uses get `android:enabled="false"` and go in its `components`. The base
 (`MainActivity`, `SessionService`, `Sandbox`) only ever reaches a module through `Modules`. The iOS
 app's `CinderModule` has the same shape.
 
 **Claude Code updates.** Nothing to do in the app: Claude Code lives in its standard native install
 in the sandbox's home (`/root/.local/bin/claude`). Its own update check slowed every start, so it's
-off, and the Claude tab runs `claude update` in the background once a day instead. `claude update` in
+off, and the app runs `claude update` once a day instead, as a sandbox process of its own a minute
+after Claude starts. `claude update` in
 the shell checks right away; ⋮ → Reinstall sandbox installs the latest release from scratch.
 
 **First run:** allow storage access. The app unpacks the sandbox, then says that Claude Code is

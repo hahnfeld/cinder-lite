@@ -8,9 +8,7 @@
 #import "ScrollbarView.h"
 #import "TerminalView.h"
 #import "UserPreferences.h"
-#import "UIApplication+OpenURL.h"
-#import "NSObject+SaneKVO.h"
-#import "Diagnostics.h"
+#import "URLDevice.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,21 +16,6 @@ struct rowcol {
     int row;
     int col;
 };
-
-@interface WeakScriptMessageHandler : NSObject <WKScriptMessageHandler>
-@property (weak) id <WKScriptMessageHandler> handler;
-@end
-@implementation WeakScriptMessageHandler
-- (instancetype)initWithHandler:(id <WKScriptMessageHandler>)handler {
-    if (self = [super init]) {
-        self.handler = handler;
-    }
-    return self;
-}
-- (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
-    [self.handler userContentController:userContentController didReceiveScriptMessage:message];
-}
-@end
 
 @interface AOKInputSlot : NSObject
 // The bytes this press produced, or nil while they are still in flight.
@@ -135,21 +118,6 @@ struct rowcol {
     scrollbarView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     scrollbarView.bounces = NO;
     [self addSubview:scrollbarView];
-
-    UserPreferences *prefs = UserPreferences.shared;
-    [prefs observe:@[@"capsLockMapping", @"optionMapping", @"backtickMapEscape", @"overrideControlSpace"]
-           options:0 owner:self usingBlock:^(typeof(self) self) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self->_keyCommands = nil;
-        });
-    }];
-    [prefs observe:@[@"colorScheme", @"fontFamily", @"fontSize", @"lineHeight", @"theme", @"cursorStyle", @"blinkCursor"]
-           options:0 owner:self usingBlock:^(typeof(self) self) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self _updateStyle];
-        });
-    }];
-
 }
 
 - (void)dealloc {
@@ -164,37 +132,18 @@ struct rowcol {
     if (object == _terminal) {
         if (_terminal.loaded) {
             [self installTerminalView];
-            [self _updateStyle];
+            [self updateStyle];
         }
     }
 }
 
-static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight", @"newScrollTop", @"openLink", @"findCount", @"imeRect"};
-
-static BOOL ISHTerminalViewEventLogEnabled(void) {
-    const char *enabled = getenv("ISH_TRACE_TERMINAL_LIFECYCLE");
-    return enabled != NULL && enabled[0] != '\0' && strcmp(enabled, "0") != 0;
-}
-
-static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDictionary<NSString *, id> *details) {
-    NSMutableDictionary<NSString *, id> *payload = [NSMutableDictionary dictionaryWithDictionary:details ?: @{}];
-    payload[@"terminalUUID"] = terminal.uuid.UUIDString ?: @"";
-    payload[@"type"] = @(terminal.type);
-    payload[@"number"] = @(terminal.number);
-    [ISHDiagnosticsStore recordBreadcrumb:event details:payload];
-    if (ISHTerminalViewEventLogEnabled()) {
-        NSLog(@"%@ terminal=%@ type=%d num=%d details=%@",
-              event, terminal.uuid.UUIDString ?: @"", terminal.type, terminal.number, payload);
-    }
-}
+static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight", @"newScrollTop", @"openLink", @"imeRect"};
 
 - (void)setTerminal:(Terminal *)terminal {
     if (_terminal == terminal)
         return;
 
     if (_terminal) {
-        ISHRecordTerminalViewEvent(@"terminalView.setTerminal.detach", _terminal,
-                                   @{@"reason": @"replace-terminal"} );
         // A composition was being typed into the terminal going away. Drop it
         // (it was never sent), and tell the keyboard its document changed so
         // it starts the next one fresh.
@@ -211,8 +160,6 @@ static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDi
     if (_terminal == nil)
         return;
 
-    ISHRecordTerminalViewEvent(@"terminalView.setTerminal.attach", _terminal,
-                               @{@"loaded": _terminal.loaded ? @"yes" : @"no"} );
     [_terminal webView];
     [_terminal addObserver:self forKeyPath:@"loaded" options:NSKeyValueObservingOptionInitial context:nil];
     [self installTerminalView];
@@ -222,15 +169,10 @@ static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDi
     UIView *superview = self.terminal.webView.superview;
     if (superview != nil) {
         NSAssert(superview == self.scrollbarView, @"installing terminal that is already installed elsewhere");
-        ISHRecordTerminalViewEvent(@"terminalView.install.skip", self.terminal,
-                                   @{@"reason": @"already-installed",
-                                     @"sameSuperview": superview == self.scrollbarView ? @"yes" : @"no"} );
         return;
     }
 
     WKWebView *webView = _terminal.webView;
-    ISHRecordTerminalViewEvent(@"terminalView.install.begin", _terminal,
-                               @{@"loaded": _terminal.loaded ? @"yes" : @"no"} );
     _terminal.enableVoiceOverAnnounce = YES;
     webView.scrollView.scrollEnabled = NO;
     webView.scrollView.delaysContentTouches = NO;
@@ -252,7 +194,6 @@ static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDi
     if (_terminal.loaded)
         [webView evaluateJavaScript:@"exports.layoutComposition()" completionHandler:nil];
     [self.terminal requestRefresh];
-    ISHRecordTerminalViewEvent(@"terminalView.install.end", _terminal, nil);
 }
 
 - (void)uninstallTerminalView {
@@ -260,68 +201,37 @@ static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDi
     UIView *superview = _terminal.webView.superview;
     if (superview != self.scrollbarView) {
         NSAssert(superview == nil, @"uninstalling terminal that is installed elsewhere");
-        ISHRecordTerminalViewEvent(@"terminalView.uninstall.skip", _terminal,
-                                   @{@"reason": superview == nil ? @"already-detached" : @"installed-elsewhere"} );
         return;
     }
 
-    ISHRecordTerminalViewEvent(@"terminalView.uninstall.begin", _terminal, nil);
     [_terminal.webView removeFromSuperview];
     self.scrollbarView.contentView = nil;
     for (int i = 0; i < sizeof(HANDLERS)/sizeof(HANDLERS[0]); i++) {
         [_terminal.webView.configuration.userContentController removeScriptMessageHandlerForName:HANDLERS[i]];
     }
     _terminal.enableVoiceOverAnnounce = NO;
-    ISHRecordTerminalViewEvent(@"terminalView.uninstall.end", _terminal, nil);
 }
 
 #pragma mark Styling
 
-- (void)_updateStyle {
+- (void)updateStyle {
     NSAssert(NSThread.isMainThread, @"This method needs to be called on the main thread");
     if (!self.terminal.loaded)
         return;
     UserPreferences *prefs = [UserPreferences shared];
-    Palette *palette = prefs.palette;
-    if (self.overrideAppearance != OverrideAppearanceNone) {
-        palette = self.overrideAppearance == OverrideAppearanceLight ? prefs.theme.lightPalette : prefs.theme.darkPalette;
-    }
-    NSMutableDictionary<NSString *, id> *themeInfo = [@{
+    NSDictionary<NSString *, id> *themeInfo = @{
         @"fontFamily": prefs.fontFamily,
-        @"fontSize": @(self.effectiveFontSize),
+        @"fontSize": prefs.fontSize,
         @"lineHeight": prefs.lineHeight,
-        @"foregroundColor": palette.foregroundColor,
-        @"backgroundColor": palette.backgroundColor,
+        @"foregroundColor": prefs.foregroundColor,
+        @"backgroundColor": prefs.backgroundColor,
         @"blinkCursor": @(prefs.blinkCursor),
         @"cursorShape": prefs.htermCursorShape,
-    } mutableCopy];
-    // Ask the palette that is actually being rendered, not prefs.palette: with
-    // an appearance override in play those are different objects, and testing
-    // one while reading the other drops a light palette's overrides whenever
-    // the dark half of the same theme happens not to define any.
-    if (palette.colorPaletteOverrides) {
-        themeInfo[@"colorPaletteOverrides"] = palette.colorPaletteOverrides;
-    }
+    };
     NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:themeInfo options:0 error:nil] encoding:NSUTF8StringEncoding];
     [self.terminal.webView evaluateJavaScript:[NSString stringWithFormat:@"exports.updateStyle(%@)", json] completionHandler:^(id result, NSError *error){
         [self updateFloatingCursorSensitivity];
     }];
-}
-
-- (void)setOverrideFontSize:(CGFloat)overrideFontSize {
-    _overrideFontSize = overrideFontSize;
-    [self _updateStyle];
-}
-
-- (void)setOverrideAppearance:(enum OverrideAppearance)overrideAppearance {
-    _overrideAppearance = overrideAppearance;
-    [self _updateStyle];
-}
-
-- (CGFloat)effectiveFontSize {
-    if (self.overrideFontSize != 0)
-        return self.overrideFontSize;
-    return UserPreferences.shared.fontSize.doubleValue;
 }
 
 #pragma mark Focus and scrolling
@@ -401,17 +311,15 @@ static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDi
             return;
         [self.scrollbarView setContentOffset:CGPointMake(0, newOffset) animated:NO];
     } else if ([message.name isEqualToString:@"openLink"]) {
-        [UIApplication openURL:message.body];
+        // The sandbox prints these links, so they get /dev/url's check.
+        NSURL *url = [message.body isKindOfClass:NSString.class] ? [NSURL URLWithString:message.body] : nil;
+        if (url != nil && CinderURLAllowed(url))
+            [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
     } else if ([message.name isEqualToString:@"imeRect"]) {
         NSArray *rect = message.body;
         if ([rect isKindOfClass:NSArray.class] && rect.count == 4)
             self.imeCellRect = CGRectMake([rect[0] doubleValue], [rect[1] doubleValue],
                                           [rect[2] doubleValue], [rect[3] doubleValue]);
-    } else if ([message.name isEqualToString:@"findCount"]) {
-        NSArray *counts = message.body;
-        if (self.findResultsDidChange != nil && [counts isKindOfClass:NSArray.class] && counts.count == 2) {
-            self.findResultsDidChange([counts[0] integerValue], [counts[1] integerValue]);
-        }
     }
 }
 
@@ -425,18 +333,8 @@ static void ISHRecordTerminalViewEvent(NSString *event, Terminal *terminal, NSDi
     BOOL needsFirstResponderDance = self.isFirstResponder && _keyboardAppearance != keyboardAppearance;
     _keyboardAppearance = keyboardAppearance;
     if (needsFirstResponderDance) {
-        // Deferred to the next runloop turn: this setter is reached from
-        // TerminalViewController's UserPreferences KVO handler inside a
-        // UIView animation block, whose call stack is not under our control
-        // -- in a multi-window Workspace, that can land while UIKit's own
-        // keyboard-scene machinery (_UIRemoteKeyboards) is already mid-
-        // transition for a DIFFERENT terminal window. Calling
-        // resignFirstResponder/becomeFirstResponder synchronously there
-        // re-enters UIKit's keyboard/input-view teardown from inside itself,
-        // observed on device as an EXC_BAD_ACCESS deep in CoreAutoLayout's
-        // _switchToLayoutEngine: (recursing through its own block ~7 times)
-        // during -[TerminalView resignFirstResponder]. Running the dance on
-        // a fresh runloop turn keeps it off any in-progress UIKit call stack.
+        // On the next runloop turn, off whatever UIKit call stack this setter was reached from:
+        // re-entering UIKit's keyboard teardown from inside itself has crashed on device.
         dispatch_async(dispatch_get_main_queue(), ^{
             [self resignFirstResponder];
             [self becomeFirstResponder];
@@ -907,35 +805,6 @@ static const NSTimeInterval kPendingInputTimeout = 0.075;
     [self.terminal.webView evaluateJavaScript:@"exports.clearScrollback()" completionHandler:nil];
 }
 
-#pragma mark Scrollback search
-
-- (void)findOpen {
-    [self.terminal.webView evaluateJavaScript:@"exports.findOpen()" completionHandler:nil];
-}
-
-- (void)findSetText:(NSString *)text {
-    // Round-trip through JSON rather than interpolating: a search query is
-    // arbitrary user text and will contain quotes, backslashes and newlines.
-    NSData *json = [NSJSONSerialization dataWithJSONObject:@[text ?: @""] options:0 error:NULL];
-    if (json == nil)
-        return;
-    NSString *literal = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
-    NSString *script = [NSString stringWithFormat:@"exports.findSetText(%@[0])", literal];
-    [self.terminal.webView evaluateJavaScript:script completionHandler:nil];
-}
-
-- (void)findNext {
-    [self.terminal.webView evaluateJavaScript:@"exports.findNext()" completionHandler:nil];
-}
-
-- (void)findPrevious {
-    [self.terminal.webView evaluateJavaScript:@"exports.findPrevious()" completionHandler:nil];
-}
-
-- (void)findClose {
-    [self.terminal.webView evaluateJavaScript:@"exports.findClose()" completionHandler:nil];
-}
-
 #pragma mark Floating cursor
 
 - (void)updateFloatingCursorSensitivity {
@@ -1032,8 +901,6 @@ static const NSTimeInterval kPendingInputTimeout = 0.075;
         }
     }
     if (command.modifierFlags == 0) {
-        if ([key isEqualToString:@"`"] && UserPreferences.shared.backtickMapEscape)
-            key = UIKeyInputEscape;
         if ([key isEqualToString:UIKeyInputEscape])
             key = @"\x1b";
         else if ([key isEqualToString:UIKeyInputUpArrow])
@@ -1049,9 +916,7 @@ static const NSTimeInterval kPendingInputTimeout = 0.075;
         [self insertText:[key uppercaseString]];
     } else if (command.modifierFlags & UIKeyModifierAlternate) {
         [self insertText:[@"\x1b" stringByAppendingString:key]];
-    } else if (command.modifierFlags & UIKeyModifierAlphaShift) {
-        [self handleCapsLockWithCommand:command];
-    } else if (command.modifierFlags & UIKeyModifierControl || command.modifierFlags & UIKeyModifierAlphaShift) {
+    } else if (command.modifierFlags & UIKeyModifierControl) {
         if (key.length == 0)
             return;
         if ([key isEqualToString:@"2"])
@@ -1064,9 +929,7 @@ static const NSTimeInterval kPendingInputTimeout = 0.075;
     }
 }
 
-static const char *alphabet = "abcdefghijklmnopqrstuvwxyz";
 static const char *controlKeys = "abcdefghijklmnopqrstuvwxyz@^26-=[]\\ ";
-static const char *metaKeys = "abcdefghijklmnopqrstuvwxyz0123456789-=[]\\;',./";
 // Held-key repeat for the vi movement keys is synthesised in -pressesBegan:
 // (see -startKeyRepeatForPresses:). These four used to be registered as bare
 // UIKeyCommands purely to borrow UIKit's key-command repeat, which put them on
@@ -1139,41 +1002,10 @@ static const char *viRepeatKeys = "hjkl";
         [self addKey:specialKey withModifiers:0];
         }
     }
-    if (UserPreferences.shared.capsLockMapping != CapsLockMapNone) {
-        if (@available(iOS 13, *)); else {
-            [self addKeys:controlKeys withModifiers:UIKeyModifierAlphaShift];
-            [self addKeys:alphabet withModifiers:0];
-            [self addKeys:alphabet withModifiers:UIKeyModifierShift];
-            [self addKey:@"" withModifiers:UIKeyModifierAlphaShift]; // otherwise tap of caps lock can switch layouts
-        }
-    }
-    if (UserPreferences.shared.optionMapping == OptionMapEsc) {
-        [self addKeys:metaKeys withModifiers:UIKeyModifierAlternate];
-    }
-    if (UserPreferences.shared.backtickMapEscape) {
-        [self addKey:@"`" withModifiers:0];
-    }
     [_keyCommands addObject:[UIKeyCommand keyCommandWithInput:@"k"
                                                 modifierFlags:UIKeyModifierCommand|UIKeyModifierShift
                                                        action:@selector(clearScrollback:)
                                          discoverabilityTitle:NSLocalizedString(@"Clear Scrollback", @"Hardware keyboard shortcut title")]];
-    // Suspend to disk. Not implemented here: it goes up the responder chain to
-    // TerminalViewController, which owns the save.
-    //
-    // This is the ONLY way to reach it with a hardware keyboard attached. The
-    // accessory bar carries the button, and a hardware keyboard is exactly when
-    // that bar is not on screen -- which is also exactly the setup someone
-    // leaves running for hours and most wants to save. Registered even when the
-    // preference is off, so holding Command advertises that the feature exists;
-    // the handler explains rather than doing nothing.
-    //
-    // Command is free here: iSH-AOK sends Control and Alt to the guest and
-    // keeps Command for the app, which is why Clear Scrollback could take
-    // Command-Shift-K above.
-    [_keyCommands addObject:[UIKeyCommand keyCommandWithInput:@"s"
-                                                modifierFlags:UIKeyModifierCommand
-                                                       action:@selector(saveSessionFromKeyCommand:)
-                                         discoverabilityTitle:NSLocalizedString(@"Save Session", @"Hardware keyboard shortcut title")]];
 
     return _keyCommands;
 }
@@ -1254,34 +1086,6 @@ static const char *viRepeatKeys = "hjkl";
         }
         [_keyCommands addObject:command];
     }
-}
-
-- (void)keyCommandTriggered:(UIKeyCommand *)sender {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self handleKeyCommand:sender];
-    });
-}
-
-- (void)handleCapsLockWithCommand:(UIKeyCommand *)command {
-    CapsLockMapping target = UserPreferences.shared.capsLockMapping;
-    NSString *newInput = command.input ? command.input : @"";
-    UIKeyModifierFlags flags = command.modifierFlags;
-    flags ^= UIKeyModifierAlphaShift;
-    if(target == CapsLockMapEscape) {
-        newInput = UIKeyInputEscape;
-    } else if(target == CapsLockMapControl) {
-        if([newInput length] == 0) {
-            return;
-        }
-        flags |= UIKeyModifierControl;
-    } else {
-        return;
-    }
-
-    UIKeyCommand *newCommand = [UIKeyCommand keyCommandWithInput:newInput
-                                                   modifierFlags:flags
-                                                          action:@selector(keyCommandTriggered:)];
-    [self handleKeyCommand:newCommand];
 }
 
 // UIKit repeats a held key only for keys claimed by a UIKeyCommand, so h/j/k/l

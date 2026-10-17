@@ -30,10 +30,10 @@ final class KeepAlive: NSObject, CLLocationManagerDelegate {
     /// Whether iOS refused location to Cinder Lite (Settings → Cinder Lite → Location to change it).
     var denied: Bool { [.denied, .restricted].contains(manager.authorizationStatus) }
 
-    /// On, and iOS lets it work. Posted as `changed` whenever that may have changed (Phone Use tells
-    /// the sandbox).
+    /// On, and iOS lets it work. Posted as `changed` when that changes (Phone Use tells the sandbox).
     var allowed: Bool { enabled && authorized }
     static let changed = Notification.Name("KeepAlive.changed")
+    private var wasAllowed = false
     private var authorized: Bool { [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus) }
 
     override init() {
@@ -69,7 +69,10 @@ final class KeepAlive: NSObject, CLLocationManagerDelegate {
     }
 
     private func update() {
-        NotificationCenter.default.post(name: Self.changed, object: self)
+        if allowed != wasAllowed {
+            wasAllowed = allowed
+            NotificationCenter.default.post(name: Self.changed, object: self)
+        }
         if enabled && wanted && authorized && !lapsed {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true

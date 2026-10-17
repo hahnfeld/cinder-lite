@@ -30,7 +30,7 @@ object AppDevelopment : Module {
     // Alpine's musl builds, ordinary commands — even the ones inside these helpers (termux-install
     // uses `sort -u`) — would die with "library not found". So Alpine wins for anything it has, and
     // Termux only supplies what Alpine lacks (aapt2, d8, apksigner).
-    override val path = listOf("$TERMUX/bin", "/usr/lib/jvm/default-jvm/bin", "/usr/local/jadx/bin")
+    override val path = listOf("$TERMUX/bin", "/usr/lib/jvm/default-jvm/bin")
 
     override val prelude = buildString {
         append("export TERMUX_PREFIX=$TERMUX; ")
@@ -78,6 +78,7 @@ object AppDevelopment : Module {
      * Copies the device's whole bionic library set into the sandbox (the base copies only what nested
      * proot needs). Only the app can read them, so android-bootstrap asks for it ([onRequest]).
      */
+    @Synchronized   // android-bootstrap's asks and the install can overlap: copy once
     private fun stageFullRuntime(sandbox: Sandbox) {
         if (fullRuntimeMarker(sandbox).exists()) return
         sandbox.stageAndroidLibs { true }
@@ -92,11 +93,6 @@ object AppDevelopment : Module {
             File(sandbox.home, ".cinder/stage-done").writeText("")
         }
     }
-
-    /** Any of its pieces from before modules existed (android-bootstrap, android-sdk-install, apk-tools-install). */
-    override fun isInUse(ctx: Context, sandbox: Sandbox) = fullRuntimeMarker(sandbox).exists() ||
-        File(sandbox.home, "android-sdk").exists() || File(sandbox.rootfs, TERMUX.removePrefix("/")).exists() ||
-        File(sandbox.rootfs, "usr/local/jadx").exists()
 
     override fun downloads(sandbox: Sandbox) =
         if (pieces(sandbox).any { it.exists() }) "the JDK, the Android tools, apktool, jadx and the copied Android libraries (about 700 MB)" else null

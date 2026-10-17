@@ -14,7 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Boots once per process: mounts the root, the host folders (guest path → host path; the guest
 /// path must be a directory in the root, created if missing), /proc, /sys, /dev/pts and Cinder's
-/// devices (/dev/url, /dev/clipboard, /dev/location), then starts init, which only sleeps.
+/// /dev/url, then starts init, which only sleeps.
 + (BOOL)bootRoot:(NSString *)rootDir mounts:(NSDictionary<NSString *, NSString *> *)mounts
            error:(NSError **)error;
 

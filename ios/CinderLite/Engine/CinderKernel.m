@@ -18,9 +18,7 @@
 #include "archive.h"
 #include "archive_entry.h"
 #import "URLDevice.h"
-#import "LocationDevice.h"
 
-extern struct dev_ops clipboard_dev;
 
 static void (^sessionExitedBlock)(int, int);
 static struct task *initTask;
@@ -171,13 +169,10 @@ static void ImportProgress(void *cookie, double progress, const char *message, b
     EnsureDevice("/dev/full", S_IFCHR | 0666, dev_make(MEM_MAJOR, DEV_FULL_MINOR));
     EnsureDevice("/dev/random", S_IFCHR | 0666, dev_make(MEM_MAJOR, DEV_RANDOM_MINOR));
     EnsureDevice("/dev/urandom", S_IFCHR | 0666, dev_make(MEM_MAJOR, DEV_URANDOM_MINOR));
-    // Bridges to iOS: /dev/url opens a link (Claude Code's /login), /dev/clipboard is the
-    // pasteboard, /dev/location keeps the app alive in the background (KeepAlive.swift).
-    dyn_dev_register(&clipboard_dev, DEV_CHAR, DYN_DEV_MAJOR, DEV_CLIPBOARD_MINOR);
-    dyn_dev_register((struct dev_ops *) &location_dev, DEV_CHAR, DYN_DEV_MAJOR, DEV_LOCATION_MINOR);
+    // The one bridge to iOS: /dev/url opens a link (Claude Code's /login, iCTRL's start link). iSH's
+    // others (/dev/clipboard, /dev/location) aren't registered: nothing here needs the user's
+    // clipboard or position, and anything in the sandbox could read them.
     dyn_dev_register(&url_dev, DEV_CHAR, DYN_DEV_MAJOR, DEV_URL_MINOR);
-    EnsureDevice("/dev/clipboard", S_IFCHR | 0666, dev_make(DYN_DEV_MAJOR, DEV_CLIPBOARD_MINOR));
-    EnsureDevice("/dev/location", S_IFCHR | 0666, dev_make(DYN_DEV_MAJOR, DEV_LOCATION_MINOR));
     EnsureDevice("/dev/url", S_IFCHR | 0666, dev_make(DYN_DEV_MAJOR, DEV_URL_MINOR));
 
     do_mount(&procfs, "proc", "/proc", "", 0);

@@ -198,19 +198,6 @@ term.io.onTerminalResize = () => {
     requestAnimationFrame(layoutComposition);
 };
 
-// Re-measure against the webview's CURRENT size, whether or not a resize event
-// arrived. hterm learns its size from exactly one place -- a 'resize' listener on
-// the iframe's window (hterm.ScrollPort.paintIframeContents_) -- and a web content
-// process that was suspended while the view was re-laid out, or one the system
-// reclaimed and we rebuilt, can simply never see that event. The scrollport then
-// keeps the geometry of the OLD bounds, so its last rows are drawn below the
-// terminal's real bottom edge, under the extra-keys row, and the view scrolls as
-// if it were still that tall. Returns the size it settled on, so the caller can
-// see it took.
-exports.resync = () => {
-    term.scrollPort_.resize();
-    return [term.screenSize.width, term.screenSize.height];
-};
 exports.getSize = () => [term.screenSize.width, term.screenSize.height];
 
 // selection, copying
@@ -326,7 +313,7 @@ hterm.ScrollPort.prototype.syncScrollHeight = function() {
 };
 term.scrollPort_.screen_.addEventListener('scroll', syncScroll);
 
-exports.updateStyle = ({foregroundColor, backgroundColor, fontFamily, fontSize, lineHeight, colorPaletteOverrides, blinkCursor, cursorShape}) => {
+exports.updateStyle = ({foregroundColor, backgroundColor, fontFamily, fontSize, lineHeight, blinkCursor, cursorShape}) => {
     term.getPrefs().set('background-color', backgroundColor);
     term.getPrefs().set('foreground-color', foregroundColor);
     term.getPrefs().set('cursor-color', foregroundColor);
@@ -336,7 +323,6 @@ exports.updateStyle = ({foregroundColor, backgroundColor, fontFamily, fontSize, 
     // 'line-height' pref: a block glyph is shorter than the box its background
     // fills, and the leftover shows as a band beside a Powerline separator.
     term.getPrefs().set('line-height', lineHeight);
-    term.getPrefs().set('color-palette-overrides', colorPaletteOverrides);
     term.getPrefs().set('cursor-blink', blinkCursor);
     term.getPrefs().set('cursor-shape', cursorShape);
     // A new font or size moves every cell; re-measure once it has laid out.
@@ -349,105 +335,9 @@ exports.getCharacterSize = () => {
 
 exports.clearScrollback = () => term.clearScrollback();
 
-// Everything on screen and in the scrollback, as plain text.
-//
-// A checkpoint saves the GUEST; what a terminal has already printed lives here,
-// in hterm, and is not part of the guest at all -- so a resumed session used to
-// come back on an empty window with its whole history gone. This is how that
-// history is carried across.
-//
-// Plain text, deliberately: hterm has no way to hand back the attributes, so
-// colour and bold do not survive. Losing the colour of old output is a much
-// smaller loss than losing the output.
-exports.getContents = (maxRows) => {
-    const total = term.getRowCount();
-    const limit = maxRows > 0 ? maxRows : 2000;
-    const start = Math.max(0, total - limit);
-    const out = [];
-    for (let i = start; i < total; i++) {
-        out.push(term.getRowText(i));
-    }
-    // Trailing blanks are the empty screen below the cursor. Kept, a restored
-    // window opens with a page of blank lines and the history scrolled out of
-    // sight.
-    while (out.length > 0 && out[out.length - 1] === '') {
-        out.pop();
-    }
-    // CRLF, not LF: hterm treats a bare newline as a line feed with no carriage
-    // return, which staircases the restored text down and off the right edge.
-    return out.join('\r\n');
-};
 exports.setUserGesture = () => term.accessibilityReader_.hasUserGesture = true;
-// Padding between the terminal text and the webview edge. Native lowers this to 0
-// when "Maximize Screen Space" is on with an external keyboard to reclaim edge space.
-exports.setScreenPaddingSize = (size) => term.getPrefs().set('screen-padding-size', size);
 
-// Scrollback search. hterm ships a complete incremental-search engine
-// (hterm.FindBar), already constructed and decorated for every terminal, but the
-// only thing that ever triggers it upstream is a Ctrl+Shift+F keymap entry that
-// can never fire here: term.js replaces onVTKeyStroke to forward every keystroke
-// to native before hterm's keyboard sees it. So the engine is driven directly
-// from the native find bar in TerminalViewController instead.
-//
-// Deliberately not findBar.display()/findBar.close(): both move focus inside the
-// webview (display() focuses hterm's own <input>, close() focuses the
-// contenteditable x-screen), which fights TerminalView for first responder and
-// can summon the WKWebView's own keyboard on top of ours. The native UITextField
-// owns the query text; only the search engine and its highlight overlay are used
-// here, and hterm's own find-bar chrome stays hidden the whole time.
-const findBar = term.findBar;
-
-exports.findOpen = () => {
-    if (findBar.isVisible)
-        return;
-    findBar.scrollPort_.subscribe('scroll', findBar.onScroll_);
-    findBar.resultScreen_.style.display = '';
-    // Load-bearing: scheduleNotifyChanges() early-returns unless isVisible, and
-    // that is what keeps results live as new output scrolls in underneath.
-    findBar.isVisible = true;
-    // Resync before the overlay is shown, as upstream display() does. findClose
-    // empties the input but leaves the previous highlight rows in the (hidden)
-    // result screen, so without this a reopen can flash stale highlights.
-    findBar.input_.dispatchEvent(new Event('input'));
-};
-
-exports.findSetText = (text) => {
-    findBar.input_.value = text;
-    // onInput_ reads event.target.value, so this routes into the existing
-    // setTimeout-batched syncResults_ rather than searching synchronously --
-    // which is what keeps a search over a long scrollback off the main thread.
-    findBar.input_.dispatchEvent(new Event('input'));
-};
-
-// Both early-return unless the matching arrow carries class 'enabled', which
-// findInRow_ adds once there is a result, so these are safe to call blind.
-exports.findNext = () => findBar.onNext_();
-exports.findPrevious = () => findBar.onPrevious_();
-
-exports.findClose = () => {
-    if (!findBar.isVisible)
-        return;
-    // close() minus its terminal_.focus(); see the note above.
-    findBar.input_.value = '';
-    findBar.searchText_ = '';
-    findBar.resultScreen_.style.display = 'none';
-    findBar.scrollPort_.unsubscribe('scroll', findBar.onScroll_);
-    findBar.isVisible = false;
-    findBar.stopSearch();
-    findBar.results_ = {};
-    findBar.resultCount_ = 0;
-};
-
-// Push the result counter to native instead of having native poll for it. Same
-// monkey-patch idiom as syncScrollHeight above. Batched searching means the
-// count climbs over several calls on a long scrollback, and this is what lets
-// the native label track it live instead of sitting at 0/0.
-const realUpdateCounterLabel = hterm.FindBar.prototype.updateCounterLabel_;
-hterm.FindBar.prototype.updateCounterLabel_ = function() {
-    realUpdateCounterLabel.call(this);
-    native.findCount([this.resultCount_, this.selectedOrdinal_]);
-};
-
+// Links the guest prints (OSC 8): native opens them only if /dev/url would (CinderURLAllowed).
 hterm.openUrl = (url) => native.openLink(url);
 
 // Bracketed paste (DECSET 2004) reaches the guest through NATIVE, not through

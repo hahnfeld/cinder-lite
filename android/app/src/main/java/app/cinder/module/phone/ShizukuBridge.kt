@@ -20,7 +20,7 @@ import android.system.Os
 import android.util.Log
 import android.widget.Toast
 import app.cinder.MainActivity
-import app.cinder.PhoneAccessibility
+import app.cinder.module.Modules
 import org.json.JSONArray
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
@@ -35,7 +35,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
- * Optional adb-shell access for the sandbox through the Shizuku app (⋮ → Shizuku, off by default).
+ * adb-shell access for the sandbox through the Shizuku app, while Phone Use is on.
  *
  * The sandbox's `rish` can't use Shizuku itself: Shizuku's own client runs Android's Java runtime,
  * which can't start inside proot. So `rish` connects here, over a Unix socket in the sandbox's
@@ -53,7 +53,6 @@ import kotlin.concurrent.thread
  */
 object ShizukuBridge {
     private const val TAG = "cinder-rish"
-    private const val PREF = "shizuku"
     private const val REQUEST = 7
     private const val NO_FOCUS = "(no text field had focus, so the text may have gone nowhere: click the field first)\n"
     private const val NO_ACCESSIBILITY = "Claude can't read the phone screen: \"Cinder Lite phone screen\" is off in " +
@@ -68,13 +67,6 @@ object ShizukuBridge {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var reminded = 0L
 
-    fun isEnabled(ctx: Context) = ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE).getBoolean(PREF, false)
-
-    fun setEnabled(ctx: Context, on: Boolean) {
-        ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE).edit().putBoolean(PREF, on).apply()
-        if (on) start(ctx) else stop(ctx)
-    }
-
     /** Shizuku's manager app, or Sui (root), which provides the same API without it. */
     fun isInstalled(ctx: Context) = Shizuku.pingBinder() || runCatching {
         ctx.packageManager.getPackageInfo(ShizukuProvider.MANAGER_APPLICATION_ID, 0); true
@@ -84,8 +76,8 @@ object ShizukuBridge {
 
     fun hasPermission() = isRunning() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
 
-    /** Shows Shizuku's own permission dialog; [onResult] gets whether it was granted. */
-    fun requestPermission(onResult: (Boolean) -> Unit) {
+    /** Shows Shizuku's own permission dialog; [onResult] gets whether it was granted. Returns its listener. */
+    fun requestPermission(onResult: (Boolean) -> Unit): Shizuku.OnRequestPermissionResultListener {
         val listener = object : Shizuku.OnRequestPermissionResultListener {
             override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
                 if (requestCode != REQUEST) return
@@ -95,11 +87,12 @@ object ShizukuBridge {
         }
         Shizuku.addRequestPermissionResultListener(listener)
         Shizuku.requestPermission(REQUEST)
+        return listener
     }
 
     @Synchronized
     fun start(ctx: Context) {
-        if (server != null || !isEnabled(ctx)) return
+        if (server != null || !Modules.isOn(ctx, PhoneUse)) return
         val app = ctx.applicationContext
         val path = socketFile(app).apply { parentFile?.mkdirs(); delete() }
         val bound = LocalSocket(LocalSocket.SOCKET_STREAM)
@@ -316,7 +309,7 @@ object ShizukuBridge {
             "read" -> {
                 val words = (1 until op.length()).map(op::optString)
                 val fresh = "fresh" in words
-                val pages = words.firstOrNull { it != "fresh" }?.let { (it.toIntOrNull() ?: error("phone read [pages] [fresh]")).coerceIn(1, 9) } ?: 4
+                val pages = words.firstOrNull { it != "fresh" }?.let { (it.toIntOrNull() ?: error("'$it' isn't a number; see: phone help")).coerceIn(1, 9) } ?: 4
                 act { print(a11y().read(it.displayId, pages, fresh)) }
             }
             "find" -> {
@@ -360,7 +353,7 @@ object ShizukuBridge {
                     check(output.lines().none { it.startsWith("Error") }) { output.trim() }
                 }
             }
-            else -> error("unknown phone operation '${op.optString(0)}'; see: phone help")
+            else -> error("unknown phone command '${op.optString(0)}'; see: phone help")
         }
     }
 
@@ -459,7 +452,7 @@ object ShizukuBridge {
     /** The bound [ShellService], binding it (and asking for Shizuku permission) if needed. */
     private fun connect(ctx: Context): IShellService {
         synchronized(binding) {
-            check(server != null) { "Shizuku support is off. Turn it on in Cinder Lite: ⋮ → Shizuku" }
+            check(server != null) { "Phone Use is off. Turn it on in Cinder Lite: ⋮ → Modules → Phone Use" }
             // Shizuku hands its connection to an app when the app comes to the front, so after Shizuku
             // starts, Cinder Lite picks it up once the user switches away and back.
             if (!isRunning()) error("Shizuku isn't running. Start it in the Shizuku app. If it's already running, " +
@@ -467,8 +460,8 @@ object ShizukuBridge {
             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                 val answered = CountDownLatch(1)
                 var granted = false
-                requestPermission { granted = it; answered.countDown() }
-                answered.await(60, TimeUnit.SECONDS)
+                val listener = requestPermission { granted = it; answered.countDown() }
+                if (!answered.await(60, TimeUnit.SECONDS)) Shizuku.removeRequestPermissionResultListener(listener)
                 if (!granted) error("Shizuku permission wasn't granted. Allow Cinder Lite in the Shizuku app.")
             }
             connected()?.let { return it }

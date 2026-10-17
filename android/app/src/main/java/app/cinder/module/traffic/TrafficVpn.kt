@@ -28,9 +28,9 @@ import java.security.cert.CertificateFactory
 import kotlin.concurrent.thread
 
 /**
- * Watching the phone's network traffic: ⋮ → Watch network traffic, or Claude's `traffic start` once
- * the user agrees on screen. Android shows its own VPN consent the first time and a key icon while
- * it runs; this service adds a notification with Stop.
+ * A capture of the phone's network traffic: Claude's (or the shell's) `traffic start`, while Network
+ * Monitor is on. Turning the module on got Android's VPN consent; Android shows a key icon while
+ * this runs, and it adds a notification with Stop.
  *
  * Android's VPN hands this app the packets of the apps being watched. hev-socks5-tunnel (an in-app
  * library) turns them back into connections and hands those to mitmproxy's SOCKS5 port in the
@@ -63,18 +63,28 @@ class TrafficVpn : VpnService() {
                 start(apps)
             } catch (e: Exception) {
                 Log.e(TAG, "traffic watching failed", e)
-                say("Couldn't watch network traffic: ${e.message}")
-                answer(this, "failed: ${e.message}")
-                shutdown()
+                failed("Couldn't watch network traffic: ${e.message}")
             }
         }
         return START_NOT_STICKY
     }
 
+    /** It stopped on its own: the user hears why, and so does a `traffic start` still waiting. */
+    private fun failed(why: String) {
+        shutdown()
+        answer(this, "failed: $why")
+        say(why)
+    }
+
     private fun start(apps: List<String>) {
         val sandbox = Sandbox(applicationContext)
         val dir = File(sandbox.tmp, "cinder-traffic").apply { mkdirs() }
-        File(dir, "state").delete()
+        // From here `traffic stop` has something to stop, and `traffic status` says so.
+        File(dir, "state").writeText("starting…\n")
+        val ready = File(dir, "ready").apply { delete() }
+        // cinder-traffic.py decrypts HTTPS only when the user trusts the certificate (it's passed through otherwise).
+        val decrypt = File(dir, "decrypt")
+        if (trusted(TrafficFlow.caCert(sandbox))) decrypt.writeText("") else decrypt.delete()
         // Whatever listens there gets every app's traffic: never something else that got there first.
         check(!listening()) { "another app is using port $PORT" }
         // A fresh login each run, so no other app on the phone can use mitmproxy's port as a proxy.
@@ -87,15 +97,19 @@ class TrafficVpn : VpnService() {
         proxy = p
         thread {
             p.waitFor()
-            if (!stopping) {
-                say("Stopped watching network traffic: mitmproxy exited (see /tmp/cinder-traffic/mitmproxy.log)")
-                answer(this, "failed: mitmproxy exited (see /tmp/cinder-traffic/mitmproxy.log)")
-                shutdown()
-            }
+            if (!stopping) failed("Stopped watching network traffic: mitmproxy exited (see /tmp/cinder-traffic/mitmproxy.log)")
         }
-        waitForPort(p)
-        if (stopping) return
+        waitForReady(p, ready)
+        establish(apps, login, https = decrypt.exists(), dir)
+    }
 
+    /**
+     * The VPN and the tunnel into mitmproxy, under the lock [shutdown] takes: a stop that came first
+     * means nothing starts, and one that comes later finds [tun] to close. So the VPN is never up
+     * without mitmproxy behind it, which would leave the phone offline.
+     */
+    @Synchronized private fun establish(apps: List<String>, login: String, https: Boolean, dir: File) {
+        if (stopping) return
         val builder = Builder()
             .setSession("Cinder Lite: watching network traffic")
             .setMtu(MTU)
@@ -133,20 +147,21 @@ class TrafficVpn : VpnService() {
         )
         check(TProxyService.TProxyStartService(config.absolutePath, fd.fd)) { "the tunnel didn't start" }
 
+        val readable = if (https) "HTTPS readable" else "hostnames only, HTTPS not readable"
         val what = if (apps.isEmpty()) "all apps" else apps.joinToString(", ") { label(it) }
-        val https = if (File(dir, "decrypt").exists()) "HTTPS readable" else "hostnames only, HTTPS not readable"
-        File(dir, "state").writeText("watching $what · $https\n")
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(ID, build("$what · $https"))
-        // Android hides the notification (and its Stop) when the user has turned them off.
-        if (!nm.areNotificationsEnabled()) say("Watching network traffic. Cinder Lite's notifications are off, so stop it in ⋮")
+        File(dir, "state").writeText("watching $what · $readable\n")
+        getSystemService(NotificationManager::class.java).notify(ID, build("${what.replaceFirstChar(Char::uppercase)} · $readable"))
     }
 
-    /** mitmproxy takes a few seconds to start under proot; the VPN only goes up once it listens. */
-    private fun waitForPort(p: Process) {
+    /**
+     * mitmproxy takes a few seconds to start under proot; the VPN only goes up once it listens. It says
+     * so itself ([ready], from cinder-traffic.py once its port is bound): a probe of the port could be
+     * answered by another app that bound it first.
+     */
+    private fun waitForReady(p: Process, ready: File) {
         val until = System.currentTimeMillis() + 60_000
         while (!stopping) {
-            if (listening()) return
+            if (ready.exists()) return
             check(p.isAlive) { "mitmproxy didn't start (see /tmp/cinder-traffic/mitmproxy.log)" }
             check(System.currentTimeMillis() < until) { "mitmproxy took too long to start" }
             Thread.sleep(300)
@@ -155,8 +170,10 @@ class TrafficVpn : VpnService() {
 
     private fun listening() = runCatching { Socket().use { it.connect(InetSocketAddress("127.0.0.1", PORT), 500) } }.isSuccess
 
-    /** Every way out comes here: the toggle, the notification, `traffic stop`, ⋮ → Stop, Android, mitmproxy. */
+    /** Every way out comes here: `traffic stop`, the notification, ⋮ → Stop, the module off, Android, mitmproxy. */
     @Synchronized private fun shutdown() {
+        // Stopped before it was up: a `traffic start` still waiting hears so now, not after its timeout.
+        if (running && tun == null) answer(this, "failed: stopped before it started")
         stopping = true
         if (tun != null) TProxyService.TProxyStopService()
         runCatching { tun?.close() }
@@ -175,13 +192,13 @@ class TrafficVpn : VpnService() {
 
     override fun onRevoke() = shutdown()   // the user turned the VPN off in Settings, or another VPN took over
 
+    private fun label(pkg: String) =
+        runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
+
     override fun onDestroy() {
         if (running) shutdown()
         super.onDestroy()
     }
-
-    private fun label(pkg: String) =
-        runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
 
     private fun say(text: String) = Handler(Looper.getMainLooper()).post { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
 
@@ -218,7 +235,7 @@ class TrafficVpn : VpnService() {
         private const val DNS = "198.18.0.2"
         const val CERT_NAME = "Cinder Lite certificate.crt"
 
-        /** Whether it's watching (or starting to); the ⋮ item's checkmark. */
+        /** Whether it's watching (or starting to). */
         @Volatile var running = false
             private set
 
@@ -231,10 +248,7 @@ class TrafficVpn : VpnService() {
             if (running) ctx.startService(Intent(ctx, TrafficVpn::class.java).setAction(ACTION_STOP))
         }
 
-        /**
-         * How Claude's `traffic start` went, for the helper waiting on it: accepted, declined,
-         * unreachable (the user can't be asked), or failed: why.
-         */
+        /** How a `traffic start` went, for the helper waiting on it: "started" isn't said, "failed: why" is. */
         fun answer(ctx: Context, text: String) {
             runCatching { File(Sandbox(ctx).tmp, "cinder-traffic").apply { mkdirs() }.resolve("answer").writeText("$text\n") }
         }

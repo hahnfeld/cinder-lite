@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Matrix
 import android.hardware.display.DisplayManager
 import android.os.Build
@@ -19,6 +20,7 @@ import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Rational
 import android.view.Display
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.KeyCharacterMap
@@ -28,6 +30,9 @@ import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import app.cinder.MainActivity
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
@@ -50,6 +55,8 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
     val spec by lazy { spec(this, intent.getBooleanExtra(EXTRA_LANDSCAPE, false)) }
     @Volatile private var shell: IShellService? = null
     private lateinit var view: SurfaceView
+    /** Shown above the display while the user has it full size: how to hand it back. */
+    private lateinit var bar: View
     @Volatile var displayId = -1
         private set
     /** The user has the window full size, to use the phone screen themselves. */
@@ -74,7 +81,27 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
         view.holder.setFixedSize(spec.width, spec.height)
         view.holder.addCallback(this)
         view.setOnTouchListener { v, event -> held && forward(v, event) }
-        setContentView(view)
+        bar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.rgb(0x22, 0x22, 0x22))
+            val pad = (8 * resources.displayMetrics.density).toInt()
+            setPadding(pad * 2, pad, pad, pad)
+            addView(TextView(context).apply {
+                text = "Claude waits while you use the phone screen"
+                setTextColor(Color.LTGRAY)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(Button(context).apply {
+                text = "Hand back to Claude"
+                isAllCaps = false
+                setOnClickListener { runCatching { enterPictureInPictureMode(params()) } }
+            })
+            visibility = View.GONE
+        }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(bar, LinearLayout.LayoutParams(-1, -2))
+            addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+        })
         current = this
     }
 
@@ -94,6 +121,7 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
     override fun onPictureInPictureModeChanged(inPip: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(inPip, newConfig)
         held = !inPip && !stopped
+        if (::bar.isInitialized) bar.visibility = if (inPip) View.GONE else View.VISIBLE
         if (!inPip && stopped) close()   // dismissed: see onStop
         // The PiP window can't take keyboard focus, but Android leaves focus on it; hand it back to
         // the terminal the first time, so the user (and the keyboard) carry on where they were. Not
@@ -108,7 +136,8 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // Full size, Back is the phone screen's own; leaving (Home, switching apps) shrinks it.
+        // Full size, Back is the phone screen's own; the bar's button, or leaving (Home, switching
+        // apps), shrinks it.
         runCatching { key(KeyEvent.KEYCODE_BACK) }
     }
 
@@ -136,8 +165,10 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
     }
 
     override fun onUserLeaveHint() {
-        // Leaving the expanded phone screen (Home, switching apps) shrinks it back into PiP.
-        if (!isInPictureInPictureMode) runCatching { enterPictureInPictureMode(params()) }
+        // Leaving the expanded phone screen (Home, switching apps) shrinks it back into PiP. Android 12+
+        // does that itself (auto-enter, below): asking here comes too late with gesture navigation, and
+        // the window would be stopped, and so closed (onStop), instead.
+        if (Build.VERSION.SDK_INT < 31 && !isInPictureInPictureMode) runCatching { enterPictureInPictureMode(params()) }
     }
 
     override fun onStart() {
@@ -243,7 +274,7 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun params() = PictureInPictureParams.Builder().setAspectRatio(Rational(spec.width, spec.height)).apply {
-        if (Build.VERSION.SDK_INT >= 31) setSeamlessResizeEnabled(false)
+        if (Build.VERSION.SDK_INT >= 31) setSeamlessResizeEnabled(false).setAutoEnterEnabled(true)
     }.build()
 
     companion object {
@@ -268,7 +299,9 @@ class PhoneScreenActivity : Activity(), SurfaceHolder.Callback {
             // A digit is that key, not the key code it would parse as.
             val code = name.singleOrNull()?.digitToIntOrNull()?.let { KeyEvent.KEYCODE_0 + it }
                 ?: KeyEvent.keyCodeFromString(name.uppercase())
-            require(code != KeyEvent.KEYCODE_UNKNOWN) { "unknown key '$name'" }
+            require(code != KeyEvent.KEYCODE_UNKNOWN) {
+                "phone key takes back, enter, tab, del, space, a letter or digit, or another key by its KEYCODE_ name; see: phone help"
+            }
             require(code in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 || code in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z ||
                 code in APP_KEYS) { "phone key only sends keys an app handles, not '$name'" }
             return code

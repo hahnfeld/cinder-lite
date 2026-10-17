@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Environment
 import android.system.Os
+import android.system.OsConstants
 import android.util.Base64
 import app.cinder.module.Module
 import app.cinder.module.Modules
@@ -74,15 +75,30 @@ class Sandbox(private val ctx: Context) {
     val androidLibexec = File(root, "lx")
     val shims = File(rootfs, "usr/local/shims")                  // agent-facing wrappers, first on PATH
 
+    /**
+     * What's bound into the sandbox, guest path to host dir: proot's -b arguments, their mount points
+     * and [hostFile] all come from here. Android's own dirs are bound in at the same paths (not
+     * /linkerconfig: apps can't read it, so proot only warns).
+     */
+    private val binds: List<Pair<String, File>>
+        get() = listOf(
+            "/workspace" to workspace, "/root" to home, "/tmp" to tmp, "/usr/local/bin" to bin,
+            // proot's own pieces have to be reachable from inside too, so `sudo` can re-enter
+            "/usr/local/libexec" to libexec, "/usr/local/androidlib" to lib, "/usr/local/androidlibexec" to androidLibexec,
+        ) + listOf("/system", "/apex", "/vendor", "/proc", "/dev", "/sys", "/system_ext", "/product").map { it to File(it) } +
+            // The phone's shared storage, once the user has granted the (legacy, targetSdk 28) storage
+            // permission — the same access Termux's termux-setup-storage gives.
+            listOfNotNull(("/sdcard" to Environment.getExternalStorageDirectory()).takeIf {
+                ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+            })
+
     /** The real file behind a path in the sandbox, through the same binds as the proot command line. */
     fun hostFile(guest: String): File {
-        val binds = listOf("/workspace" to workspace, "/root" to home, "/tmp" to tmp, "/usr/local/bin" to bin,
-            "/usr/local/libexec" to libexec, "/sdcard" to Environment.getExternalStorageDirectory())
         for ((path, dir) in binds) if (guest == path || guest.startsWith("$path/")) return File(dir, guest.removePrefix(path))
         return File(rootfs, guest)
     }
 
-    fun ensureLayout() {
+    private fun ensureLayout() {
         listOf(home, workspace, bin, lib, libexec, rootfs, tmp).forEach { it.mkdirs() }
     }
 
@@ -93,7 +109,6 @@ class Sandbox(private val ctx: Context) {
      * missing. (App Development copies the device's whole set, for Termux's tools.)
      */
     fun stageAndroidRuntime() {
-        listOf(androidLib64, androidLibexec, shims).forEach { it.mkdirs() }
         val linkerDst = File(androidLibexec, "linker64")
         if (linkerDst.canExecute() && NESTED_PROOT_LIBS.all { File(androidLib64, it).exists() }) return
 
@@ -107,7 +122,6 @@ class Sandbox(private val ctx: Context) {
 
     /** Copies the device's bionic .so files whose names pass [wanted] into [androidLib64], where missing. */
     fun stageAndroidLibs(wanted: (String) -> Boolean) {
-        androidLib64.mkdirs()
         // cp by resolving symlinks so each name is a real file in one flat directory the linker
         // (and each lib's own rpath) can scan. Unreadable APEX partitions are simply skipped.
         val srcDirs = listOf(
@@ -161,10 +175,7 @@ class Sandbox(private val ctx: Context) {
      */
     val prootLoader = File(libexec, "loader")
     val hasBash get() = File(rootfs, "bin/bash").exists()
-    /**
-     * What [installBaseTools] puts down, as apk itself records it. Installs from before apk could
-     * write its database have the files but no record, and get them installed (recorded) again.
-     */
+    /** What [installBaseTools] puts down, as apk itself records it. */
     val hasBaseTools get() = installedPackages.containsAll(listOf("P:bash", "P:python3", "P:nodejs", "P:tzdata"))
     /** The packages apk has installed, as its database lists them: "P:bash", "P:python3", … */
     val installedPackages get() = runCatching {
@@ -202,20 +213,11 @@ class Sandbox(private val ctx: Context) {
 
     /**
      * proot refuses to sanitize a binding whose target doesn't exist inside the rootfs, so the
-     * mount points have to be created there first.
+     * mount points have to be created there first. Plus /dev/shm, which JVMs and anything using
+     * shm_open expect; Alpine's minirootfs has none and Android provides none to bind.
      */
-    fun ensureMountPoints() {
-        val fixed = listOf(
-            "workspace", "root", "tmp", "usr/local/bin", "usr/local/libexec", "usr/local/androidlib",
-            "usr/local/androidlibexec",
-            // JVMs and anything using shm_open expect this to exist; Alpine's minirootfs has no
-            // /dev/shm and Android provides none to bind.
-            "dev/shm",
-            "sdcard"
-        )
-        // Android's linker and bionic libs live in /apex, and /system/bin/linker64 is only a
-        // symlink into it — a mount point is needed inside the rootfs for each path we bind.
-        (fixed + androidPaths.map { it.trimStart('/') }).forEach { File(rootfs, it).mkdirs() }
+    private fun ensureMountPoints() {
+        (binds.map { it.first } + "/sdcard" + "/dev/shm").forEach { File(rootfs, it).mkdirs() }
     }
 
     /**
@@ -223,7 +225,7 @@ class Sandbox(private val ctx: Context) {
      * hostname — every request dies as ETIMEDOUT. Write the device's current DNS servers in, and
      * refresh it on each launch since they change with the network.
      */
-    fun configureNetwork() {
+    private fun configureNetwork() {
         val servers = runCatching {
             val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
             val net = cm.activeNetwork
@@ -232,14 +234,9 @@ class Sandbox(private val ctx: Context) {
 
         // Public resolvers as a fallback: a VPN or a restricted network can hide the real ones.
         val all = (servers + listOf("1.1.1.1", "8.8.8.8")).distinct().take(4)
-        val etc = File(rootfs, "etc").apply { mkdirs() }
-        File(etc, "resolv.conf").writeText(
-            all.joinToString("\n") { "nameserver $it" } + "\noptions timeout:2 attempts:2\n"
-        )
-        val hosts = File(etc, "hosts")
-        if (!hosts.exists() || hosts.readText().isBlank()) {
-            hosts.writeText("127.0.0.1 localhost\n::1 localhost ip6-localhost\n")
-        }
+        writeText(File(rootfs, "etc/resolv.conf"), all.joinToString("\n") { "nameserver $it" } + "\noptions timeout:2 attempts:2\n")
+        val hosts = File(rootfs, "etc/hosts")
+        if (readSandboxFile(hosts).isNullOrBlank()) writeText(hosts, "127.0.0.1 localhost\n::1 localhost ip6-localhost\n")
     }
 
     /**
@@ -249,15 +246,12 @@ class Sandbox(private val ctx: Context) {
      * props. Write the full output where the getprop shim reads it. Refreshed each launch so ro.*
      * and current values stay reasonably fresh.
      */
-    fun refreshSystemInfo() {
+    private fun refreshSystemInfo() {
         runCatching {
             val p = ProcessBuilder("getprop").redirectErrorStream(true).start()
             val text = p.inputStream.bufferedReader().readText()
             p.waitFor()
-            if (text.isNotBlank()) {
-                File(home, ".cinder").apply { mkdirs() }
-                File(home, ".cinder/getprop.txt").writeText(text)
-            }
+            if (text.isNotBlank()) writeText(File(home, ".cinder/getprop.txt"), text)
         }
     }
 
@@ -268,15 +262,14 @@ class Sandbox(private val ctx: Context) {
      * they're used only on request — `apk add wine@testing`, `apk add foo@edge`.
      * Refreshed each launch; the apk shim fetches indexes with --no-cache so no `apk update` needed.
      */
-    fun configureRepositories() {
-        val apk = File(rootfs, "etc/apk").apply { mkdirs() }
-        val release = runCatching { File(rootfs, "etc/alpine-release").readText().trim() }
-            .getOrNull()?.takeIf { it.isNotBlank() } ?: "3.24.0"
+    private fun configureRepositories() {
+        val release = readSandboxFile(File(rootfs, "etc/alpine-release"))?.trim()?.takeIf { it.isNotBlank() } ?: "3.24.0"
         // "3.24.1" -> "v3.24"; anything unexpected falls back to the rolling edge branch.
         val branch = Regex("""^(\d+)\.(\d+)""").find(release)?.let { "v${it.groupValues[1]}.${it.groupValues[2]}" }
             ?: "edge"
         val mirror = "https://dl-cdn.alpinelinux.org/alpine"
-        File(apk, "repositories").writeText(
+        writeText(
+            File(rootfs, "etc/apk/repositories"),
             buildString {
                 append("$mirror/$branch/main\n")
                 append("$mirror/$branch/community\n")
@@ -286,14 +279,6 @@ class Sandbox(private val ctx: Context) {
             }
         )
     }
-
-    /** Android paths bound into the sandbox. (Not /linkerconfig: apps can't read it, so proot only warns.) */
-    private val androidPaths = listOf(
-        "/system", "/apex", "/vendor", "/proc", "/dev", "/sys", "/system_ext", "/product"
-    )
-
-    private fun androidBinds(): Array<String> =
-        androidPaths.flatMap { listOf("-b", "$it:$it") }.toTypedArray()
 
     /**
      * The argv that runs [inner] (a /bin/sh command line) inside the Alpine rootfs under proot: the
@@ -341,17 +326,12 @@ class Sandbox(private val ctx: Context) {
             append("export PYTHONUSERBASE=/root/.local; ")
             // Nothing in here can open a browser; xdg-open hands the URL to the app (OAuth login).
             append("export BROWSER=xdg-open; ")
-            // No telemetry, error reports or update check holding up every start; the Claude tab
-            // runs `claude update` once a day instead (MainActivity.UPDATE). Same as the iOS app.
+            // No telemetry, error reports or update check holding up every start; the app runs
+            // `claude update` once a day instead ([updateClaude]). Same as the iOS app.
             append("export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; ")
             // The phone's time zone (tzdata has the rules), so clocks in here read local time.
             timeZone()?.let { append("export TZ=$it; ") }
         }
-        // The phone's shared storage, once the user has granted the (legacy, targetSdk 28)
-        // storage permission — the same access Termux's termux-setup-storage gives.
-        val sdcard = if (ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-            PackageManager.PERMISSION_GRANTED
-        ) listOf("-b", "${Environment.getExternalStorageDirectory().absolutePath}:/sdcard") else emptyList()
         return listOfNotNull(
             proot,
             // SELinux denies hard links in app storage; proot emulates them with symlinks (as
@@ -359,16 +339,7 @@ class Sandbox(private val ctx: Context) {
             "--link2symlink",
             if (asRoot) "-0" else null,
             "-r", rootfs.absolutePath,
-            *androidBinds(),
-            "-b", "${workspace.absolutePath}:/workspace",
-            "-b", "${home.absolutePath}:/root",
-            "-b", "${bin.absolutePath}:/usr/local/bin",
-            // proot's own pieces have to be reachable from inside too, so `sudo` can re-enter
-            "-b", "${libexec.absolutePath}:/usr/local/libexec",
-            "-b", "${lib.absolutePath}:/usr/local/androidlib",
-            "-b", "${androidLibexec.absolutePath}:/usr/local/androidlibexec",
-            "-b", "${tmp.absolutePath}:/tmp",
-            *sdcard.toTypedArray(),
+            *binds.flatMap { (guest, host) -> listOf("-b", "${host.absolutePath}:$guest") }.toTypedArray(),
             "-w", "/workspace",
             "/bin/sh", "-c", prelude + inner
         ).toTypedArray()
@@ -395,7 +366,8 @@ class Sandbox(private val ctx: Context) {
      * removed, so Claude finds none of its commands.
      */
     private fun writeHelpers() {
-        copyAsset("claude-settings.json", File(libexec, "cinder-settings.json"))
+        copyAsset("cinder-settings.json", File(libexec, "cinder-settings.json"))
+        copyAsset("cinder-notify", File(libexec, "cinder-notify"), executable = true)
         copyAsset("linkerconfig/ld.config.txt", File(rootfs, "linkerconfig/ld.config.txt"))
         for ((dir, target) in listOf("bin" to bin, "shims" to shims)) {
             for (name in ctx.assets.list("helpers/$dir").orEmpty()) {
@@ -433,6 +405,21 @@ class Sandbox(private val ctx: Context) {
 
     private fun copyAsset(name: String, to: File, executable: Boolean = false) =
         replace(to, executable) { out -> ctx.assets.open(name).use { it.copyTo(out, 1 shl 16) } }
+
+    /** Into a dir the sandbox can write: through [replace], so a link planted at [to] is replaced, not followed. */
+    private fun writeText(to: File, text: String) = replace(to, executable = false) { it.write(text.toByteArray()) }
+
+    /**
+     * Claude Code's own update check is off (the prelude), so the app updates it: once a day, a minute
+     * after Claude starts, as a sandbox process of its own, outside the Claude tab, which neither waits
+     * for it nor ends it. Call off the main thread.
+     */
+    fun updateClaude() {
+        val stamp = File(home, ".cache/cinder-update")
+        if (System.currentTimeMillis() - stamp.lastModified() < DAY_MS) return
+        writeText(stamp, "")
+        runCatching { spawn("sleep 60; exec /root/.local/bin/claude update </dev/null >/root/.cache/cinder-update.log 2>&1") }
+    }
 
     // ---------------- setup: run off the main thread, report through [log] ----------------
 
@@ -483,7 +470,7 @@ class Sandbox(private val ctx: Context) {
      * Installs the latest Claude Code. The official linux-arm64-musl build of npm's current release
      * is downloaded — what `npm install` would fetch on a laptop — and checked against the sha512 npm
      * publishes for it, then its own `claude install` sets up the native install in $HOME. From
-     * there Claude Code keeps itself up to date.
+     * there the app keeps it up to date ([updateClaude]).
      */
     fun installClaude(log: (String) -> Unit) {
         val meta = org.json.JSONObject(fetch(NPM_LATEST).readBytes().decodeToString())
@@ -677,8 +664,30 @@ class Sandbox(private val ctx: Context) {
     companion object {
         private const val NPM_LATEST = "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64-musl/latest"
         private const val PROGRESS_STEP = 25L shl 20
+        private const val DAY_MS = 24 * 60 * 60 * 1000L
 
         /** What nested proot (sudo, apk) needs: libc and friends, plus liblog for libandroid-shmem. */
         private val NESTED_PROOT_LIBS = setOf("libc.so", "libdl.so", "libm.so", "ld-android.so", "liblog.so", "libc++.so")
     }
 }
+
+/**
+ * Reads a small file the sandbox can write, the way nothing in there can trick: not through a link,
+ * not blocking on a pipe swapped in, and no more than [limit] bytes. Null if it isn't such a file.
+ */
+fun readSandboxFile(file: File, limit: Int = 1 shl 16): String? = runCatching {
+    val fd = Os.open(file.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_NONBLOCK, 0)
+    try {
+        if (!OsConstants.S_ISREG(Os.fstat(fd).st_mode)) return null
+        val buf = ByteArray(limit + 1)
+        var total = 0
+        while (total < buf.size) {
+            val n = Os.read(fd, buf, total, buf.size - total)
+            if (n <= 0) break
+            total += n
+        }
+        if (total > limit) null else String(buf, 0, total)
+    } finally {
+        Os.close(fd)
+    }
+}.getOrNull()

@@ -1,6 +1,6 @@
 #!/bin/sh
 # phone: drive Cinder Lite's phone screen, a separate virtual screen shown in a picture-in-picture
-# window (needs Shizuku support on: Cinder Lite ⋮ → Shizuku). Element commands use the accessibility
+# window (needs the Shizuku app running). Element commands use the accessibility
 # tree; coordinate commands use display pixels, the same numbers as in `phone ui` bounds and shots.
 # Cinder Lite does the work: every command but help goes straight to it through rish.
 usage() {

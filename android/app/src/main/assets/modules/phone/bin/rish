@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """rish: run a command with adb-shell privileges through Shizuku.
 
-Cinder Lite relays it to the Shizuku app (turn it on in the app's ⋮ menu → Shizuku).
+Cinder Lite relays it to the Shizuku app while Phone Use is on (⋮ → Modules).
   rish                  interactive shell (line-based, no tty)
   rish -c 'command'     run one command
   rish command args...  the same, joined with spaces
@@ -30,7 +30,8 @@ def main():
     try:
         sock.connect("/usr/local/libexec/rish.sock")
     except OSError:
-        sys.stderr.write(me + ": Shizuku support is off. Turn it on in Cinder Lite: ⋮ → Shizuku\n")
+        sys.stderr.write(me + ": Cinder Lite isn't relaying to Shizuku: Phone Use is off (⋮ → Modules), "
+                         "or Cinder Lite isn't running\n")
         return 1
     # Only Cinder Lite itself (the same uid as this sandbox) may answer: it receives the command and
     # our output streams. Under sudo's fake root our own uid reads as 0, so there's nothing to compare.

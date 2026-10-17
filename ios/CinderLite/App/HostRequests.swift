@@ -21,14 +21,37 @@ final class DirectoryWatcher {
 }
 
 /// Reads a request file and removes it. Anything in the sandbox can write these, so only a small
-/// regular file is read: not a link (to /dev/zero, say), a pipe that would block, or a huge file.
+/// regular file is read: not a link (to /dev/zero, say), a pipe that would block, or a huge file. The
+/// checks are on what was opened, so nothing swapped in between can get past them.
 func take(_ file: URL) -> Data? {
     defer { unlink(file.path) }
-    var st = stat()
-    guard lstat(file.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_size <= 1 << 16 else { return nil }
-    let fd = open(file.path, O_RDONLY | O_NOFOLLOW)
+    let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
     if fd < 0 { return nil }
-    return FileHandle(fileDescriptor: fd, closeOnDealloc: true).readDataToEndOfFile()
+    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    var st = stat()
+    guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG,
+          let data = try? handle.read(upToCount: (1 << 16) + 1), data.count <= 1 << 16 else { return nil }
+    return data
+}
+
+/// The sandbox's requests to the app: files in /root/.cinder, each name to its handler, with one
+/// watcher for the folder (Android's SessionService has the same table). Anything else there, such as
+/// a request still being written under another name, is left alone.
+enum Requests {
+    private static var handlers: [String: (Data) -> Void] = [:]
+    private static var watcher: DirectoryWatcher?
+
+    static func handle(_ name: String, with handler: @escaping (Data) -> Void) {
+        handlers[name] = handler
+        if watcher == nil { watcher = DirectoryWatcher(Sandbox.shared.requests, changed: scan) } else { scan() }
+    }
+
+    private static func scan() {
+        for (name, handler) in handlers {
+            let file = Sandbox.shared.requests.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: file.path), let data = take(file) { handler(data) }
+        }
+    }
 }
 
 /// xdg-open on a file: /root/.cinder/open-request names it, and it opens in iOS's preview, whose share
@@ -36,28 +59,27 @@ func take(_ file: URL) -> Data? {
 /// sandbox can call xdg-open; hidden files (logins, keys) aren't handed out.
 final class FileOpener: NSObject, QLPreviewControllerDataSource {
     static let shared = FileOpener()
-    private var watcher: DirectoryWatcher?
     private weak var presenter: UIViewController?
     private var file: URL?
 
     func start(presenter: UIViewController) {
-        guard watcher == nil else { return }
         self.presenter = presenter
-        let request = Sandbox.shared.requests.appendingPathComponent("open-request")
-        watcher = DirectoryWatcher(Sandbox.shared.requests) { [weak self] in
-            guard FileManager.default.fileExists(atPath: request.path), let data = take(request),
-                  let guest = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        Requests.handle("open-request") { [weak self] data in
+            guard let guest = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             self?.open(guest)
         }
     }
 
+    /// Only a file the sandbox can see, and nothing hidden on the way to it, as named or after its links
+    /// are followed: a link in /workspace can't hand out /root/.claude/.credentials.json.
     private func open(_ guest: String) {
-        guard guest.hasPrefix("/"), !guest.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { return }
+        func hidden<S: StringProtocol>(_ path: S) -> Bool { path.split(separator: "/").contains { $0.hasPrefix(".") } }
+        guard guest.hasPrefix("/"), !hidden(guest) else { return }
         let file = Sandbox.shared.hostFile(guest).resolvingSymlinksInPath()
         let fm = FileManager.default
-        let roots = [fm.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Cinder"), Sandbox.shared.workspace]
         var isDir: ObjCBool = false
-        guard roots.contains(where: { file.path.hasPrefix($0.resolvingSymlinksInPath().path + "/") }),
+        guard let root = Sandbox.shared.visible.map({ $0.resolvingSymlinksInPath().path + "/" }).first(where: file.path.hasPrefix),
+              !hidden(file.path.dropFirst(root.count)),
               fm.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue,
               var top = presenter else { return }
         while let shown = top.presentedViewController { top = shown }
@@ -71,41 +93,18 @@ final class FileOpener: NSObject, QLPreviewControllerDataSource {
     func previewController(_: QLPreviewController, previewItemAt _: Int) -> QLPreviewItem { file! as NSURL }
 }
 
-/// Modules' requests (CinderModule.requests), each to its module while that's on. A disabled
-/// module's requests are removed unread: the sandbox can write them whether or not it's on.
-final class ModuleRequests {
-    static let shared = ModuleRequests()
-    private var watcher: DirectoryWatcher?
-
-    func start() {
-        guard watcher == nil, Modules.all.contains(where: { !$0.requests.isEmpty }) else { return }
-        watcher = DirectoryWatcher(Sandbox.shared.requests) {
-            for module in Modules.all {
-                for name in module.requests {
-                    let file = Sandbox.shared.requests.appendingPathComponent(name)
-                    guard FileManager.default.fileExists(atPath: file.path), let data = take(file), Modules.isOn(module) else { continue }
-                    module.handle(request: name, data: data)
-                }
-            }
-        }
-    }
-}
-
-/// Claude Code's hooks (cinder-settings.json) write each event to /root/.cinder/notify-request.
+/// Claude Code's hooks (cinder-settings.json, through cinder-notify) write each event to
+/// /root/.cinder/notify-request.
 /// Stop notifies only for turns that ran a minute or more; Notification does when Claude needs
 /// something (permission, a question), but not its idle "waiting for your input" reminder, which
 /// would ping after every reply. Nothing is posted while the app is on screen.
 final class Notifier {
     static let shared = Notifier()
-    private var watcher: DirectoryWatcher?
     private var turnStarted = Date.distantFuture   // unknown start: never counts as long
 
     func start() {
-        guard watcher == nil else { return }
-        let file = Sandbox.shared.requests.appendingPathComponent("notify-request")
-        watcher = DirectoryWatcher(Sandbox.shared.requests) { [weak self] in
-            guard FileManager.default.fileExists(atPath: file.path), let data = take(file),
-                  let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        Requests.handle("notify-request") { [weak self] data in
+            guard let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
             self?.onHook(event)
         }
     }
@@ -168,6 +167,9 @@ final class ClaudeInstaller: NSObject, URLSessionDownloadDelegate {
 
     func start() {
         guard watcher == nil else { return }
+        // A download this process isn't running was cut short (the app was killed mid-way): its last
+        // progress line would keep cinder-setup waiting for it, so setup asks again instead.
+        try? FileManager.default.removeItem(at: dl.appendingPathComponent("progress"))
         watcher = DirectoryWatcher(dl) { [weak self] in
             guard let self else { return }
             let request = self.dl.appendingPathComponent("request")

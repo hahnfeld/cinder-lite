@@ -8,7 +8,7 @@ https://github.com/hahnfeld/cinder-lite (`ios/`).
 
 | Component | Used for | License | Source |
 |---|---|---|---|
-| iSH-AOK, commit `651f974a` | the emulator (`libish`, `libish_emu`, `libfakefs`, built from source) and, adapted, the terminal and devices in `CinderLite/Engine/` (Terminal, TerminalView, ScrollbarView, DelayedUITask, NSObject+SaneKVO, UIApplication+OpenURL, URLDevice, PasteboardDevice, LocationDevice) and `terminal/term.*`. Copyright Theodore Dubois, Michael Miller and the iSH and iSH-AOK contributors | GPL-3.0 (`GPL-3.0.txt`), with iSH's additional permission for app stores (below) | https://github.com/emkey1/ish-AOK |
+| iSH-AOK, commit `651f974a` | the emulator (`libish`, `libish_emu`, `libfakefs`, built from source) and, adapted, the terminal and devices in `CinderLite/Engine/` (Terminal, TerminalView, ScrollbarView, DelayedUITask, URLDevice) and `terminal/term.*`. Copyright Theodore Dubois, Michael Miller and the iSH and iSH-AOK contributors | GPL-3.0 (`GPL-3.0.txt`), with iSH's additional permission for app stores (below) | https://github.com/emkey1/ish-AOK |
 | hterm (libapps) | the terminal emulator in the web view (`hterm_all.js`) | BSD-3-Clause (`hterm-libapps-LICENSE.txt`) | https://chromium.googlesource.com/apps/libapps, as vendored in iSH-AOK `deps/libapps` |
 | libarchive | unpacking the Alpine root and Claude Code's npm package | BSD-2-Clause (`libarchive-COPYING.txt`) | https://github.com/libarchive/libarchive, as vendored in iSH-AOK `deps/libarchive` |
 | liblzma (XZ Utils) 5.8.3 | `.xz` support in libarchive | 0BSD (`0BSD-liblzma.txt`) | https://tukaani.org/xz/, as vendored in iSH-AOK `deps/liblzma-static` |

@@ -3,6 +3,7 @@ package app.cinder
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -15,6 +16,7 @@ import android.graphics.fonts.FontFamily
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.util.Log
 import android.util.TypedValue
@@ -42,6 +44,9 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+
+/** The app's settings: autocorrect, which modules are on. */
+internal fun prefs(ctx: Context) = ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE)
 
 /**
  * One screen: Claude Code's own TUI in a Termux terminal view, with a row of the keys a phone
@@ -119,12 +124,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 requestPermissions(arrayOf(STORAGE), 1)   // boots from onRequestPermissionsResult
             else -> boot()
         }
-        Modules.enabled(this).forEach { it.onIntent(this, intent) }
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        Modules.enabled(this).forEach { it.onIntent(this, intent) }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -164,6 +163,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
      */
     private fun boot(reset: Boolean = false) {
         if (!busy.compareAndSet(false, true)) return
+        askForNotifications()
         val sandbox = sandbox
         val app = applicationContext
         if (reset || !sandbox.ready) {
@@ -177,6 +177,13 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 sandbox.bootstrap(::log)
                 if (!sandbox.hasClaude) { askToDownload(); sandbox.installClaude(::log) }
                 if (!sandbox.hasBaseTools) sandbox.installBaseTools(::log)
+                // A module whose files are gone (Reinstall sandbox deletes them) would only fail: off it goes.
+                for (module in Modules.enabled(app)) if (!module.isInstalled(sandbox)) {
+                    Modules.set(app, module, false)
+                    val why = "${module.title} is off: what it installed is gone. ⋮ → Modules turns it on again."
+                    log(why)
+                    main.post { Toast.makeText(app, why, Toast.LENGTH_LONG).show() }
+                }
                 launch(sandbox, Tab.Claude)
             } catch (e: Exception) {
                 Log.e(TAG, "setup failed", e)
@@ -281,17 +288,45 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 true
             }
         val on = Modules.enabled(this@MainActivity)
-        on.forEach { it.menu(this@MainActivity, menu) }
         val modules = menu.addSubMenu("Modules")
         for (module in Modules.all) {
             modules.add(module.title).setCheckable(true).setChecked(module in on)
                 .setOnMenuItemClickListener { if (module in on) turnOff(module) else turnOn(module); true }
         }
-        menu.add("Reinstall sandbox").setOnMenuItemClickListener {
-            if (!busy.get()) { finishAll(); boot(reset = true) }
-            true
-        }
+        menu.add("Reinstall sandbox").setOnMenuItemClickListener { confirmReinstall(); true }
     }.show()
+
+    /** ⋮ → Reinstall sandbox, once the user agrees: it deletes a lot, and one mis-tap shouldn't. */
+    private fun confirmReinstall() {
+        if (busy.get()) return
+        AlertDialog.Builder(this)
+            .setTitle("Reinstall sandbox?")
+            .setMessage("Both sessions end, and everything installed in the sandbox is deleted: packages, Claude " +
+                "Code itself (it downloads again), and what modules downloaded (those modules turn off). Your " +
+                "login, settings and /workspace are kept.")
+            .setPositiveButton("Reinstall") { _, _ -> if (!busy.get()) { finishAll(); boot(reset = true) } }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /**
+     * Claude's alerts are phone notifications. Android 13+ starts apps that target older versions (this
+     * one targets 28) with notifications off, and won't let them ask; so Cinder Lite asks, once.
+     */
+    private fun askForNotifications() {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (nm.areNotificationsEnabled() || prefs(this).getBoolean(ASKED_NOTIFICATIONS, false)) return
+        prefs(this).edit().putBoolean(ASKED_NOTIFICATIONS, true).apply()
+        AlertDialog.Builder(this)
+            .setTitle("Turn on notifications?")
+            .setMessage("Cinder Lite tells you when Claude finishes or needs you with a phone notification, but " +
+                "Android has them off. Turn them on in the next screen.")
+            .setPositiveButton("Open settings") { _, _ ->
+                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
 
     // ---------------- modules (see module/Module.kt) ----------------
 
@@ -301,8 +336,11 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
      */
     private fun turnOn(module: Module) {
         if (busy.get()) return
-        val download = module.download
-        if (module.isInstalled(sandbox) || download == null) return install(module)
+        if (module.isInstalled(sandbox)) {
+            Modules.set(applicationContext, module, true)
+            return showTurnedOn(module)
+        }
+        val download = module.download ?: return install(module)
         AlertDialog.Builder(this)
             .setTitle("Turn on ${module.title}?")
             .setMessage("Turning it on downloads $download, once. It can take a few minutes; keep Cinder Lite open.")
@@ -317,10 +355,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         val sandbox = sandbox
         val app = applicationContext
         Modules.set(app, module, true)
-        if (module.isInstalled(sandbox)) {
-            busy.set(false)
-            return turnedOn(module)
-        }
         setupLog.setLength(0)
         log("turning on ${module.title}…")
         showLog()
@@ -328,7 +362,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         thread {
             try {
                 module.install(app, sandbox, ::log)
-                main.post { ui?.run { back(); turnedOn(module) } }
+                main.post { ui?.run { back(); showTurnedOn(module) } }
             } catch (e: Exception) {
                 Log.e(TAG, "couldn't turn on ${module.title}", e)
                 Modules.set(app, module, false)
@@ -345,13 +379,14 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     private fun back() = current?.let(::attach) ?: show(shown)
 
     /** Claude reads its brief when it starts, so a module it should know about needs a restart. */
-    private fun turnedOn(module: Module) {
+    private fun showTurnedOn(module: Module) {
         AlertDialog.Builder(this)
             .setTitle("${module.title} is on")
-            .setMessage(listOfNotNull(module.nextStep, "Claude learns about it when it next starts. Restart Claude now? " +
+            .setMessage(listOfNotNull(module.nextStep(this), "Claude learns about it when it next starts. Restart Claude now? " +
                 "(claude --continue picks the conversation back up.)").joinToString("\n\n"))
             .setPositiveButton("Restart Claude") { _, _ -> restart(Tab.Claude) }
             .setNegativeButton("Later", null)
+            .setOnDismissListener { if (!isDestroyed) module.turnedOn(this) }
             .show()
     }
 
@@ -364,13 +399,13 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
             .setMessage("Claude stops seeing its commands when it next starts." +
                 (downloads?.let { "\n\nAlso delete $it? Turning it on again downloads them again." } ?: ""))
             .setNegativeButton("Cancel", null)
-        if (downloads == null) dialog.setPositiveButton("Turn off") { _, _ -> turnedOff(module, delete = false) }
-        else dialog.setPositiveButton("Turn off, keep files") { _, _ -> turnedOff(module, delete = false) }
-            .setNeutralButton("Turn off and delete") { _, _ -> turnedOff(module, delete = true) }
+        if (downloads == null) dialog.setPositiveButton("Turn off") { _, _ -> switchOff(module, delete = false) }
+        else dialog.setPositiveButton("Turn off, keep files") { _, _ -> switchOff(module, delete = false) }
+            .setNeutralButton("Turn off and delete") { _, _ -> switchOff(module, delete = true) }
         dialog.show()
     }
 
-    private fun turnedOff(module: Module, delete: Boolean) {
+    private fun switchOff(module: Module, delete: Boolean) {
         if (!busy.compareAndSet(false, true)) return
         val sandbox = sandbox
         val app = applicationContext
@@ -500,7 +535,8 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
     override fun onSessionFinished(finishedSession: TerminalSession) {
         val tab = tabOf(finishedSession) ?: return   // a session that was already replaced
-        if (sessions.values.none { it.isRunning }) SessionService.stop(applicationContext)
+        // Not while setup runs (Reinstall ends the sessions it then outlasts): it needs the service too.
+        if (!busy.get() && sessions.values.none { it.isRunning }) SessionService.stop(applicationContext)
         // Termux has just printed "[Process completed … - press Enter]" wherever the cursor was —
         // for Claude's TUI that's mid-screen, on top of its input box. Start the visible screen over
         // (scrollback is kept) with normal terminal state and a plain notice instead.
@@ -548,18 +584,14 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
     companion object {
         private const val TAG = "cinder"
         private const val STORAGE = Manifest.permission.WRITE_EXTERNAL_STORAGE
+        private const val ASKED_NOTIFICATIONS = "askedNotifications"
         private const val VOICE = 2   // startActivityForResult codes; modules use 100 and up
         // Claude Code can't verify who owns its default messaging-socket directory under proot (its
         // uid reads as the kernel overflow uid), so it turns cross-session messaging off and warns.
         // An explicit socket path (one per process, like its default) skips that check.
         // --settings adds the hooks that turn Claude's notifications into phone notifications
-        // (assets/claude-settings.json), without touching the user's own settings files.
-        // Claude Code's own update check is off (Sandbox's prelude), so it updates here: once a day, a
-        // minute after starting, in its own session so it outlives this one. The iOS app does the same.
-        private const val UPDATE =
-            "s=/root/.cache/cinder-update; [ -n \"\$(find \$s -mtime -1 2>/dev/null)\" ] || { mkdir -p /root/.cache && : > \$s; " +
-                "setsid sh -c 'sleep 60; exec /root/.local/bin/claude update' </dev/null >\$s.log 2>&1 & }; "
-        private const val CLAUDE = UPDATE +
+        // (assets/cinder-settings.json), without touching the user's own settings files.
+        private const val CLAUDE =
             "mkdir -p -m 700 /tmp/cc-socks && exec /root/.local/bin/claude --messaging-socket-path /tmp/cc-socks/\$\$.sock " +
                 "--settings /usr/local/libexec/cinder-settings.json --append-system-prompt \"\$(cat /usr/local/libexec/cinder-brief.md)\""
         // Not a login shell: Alpine's /etc/profile would reset PATH and drop the sandbox's tools.
@@ -594,7 +626,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
         private val sessions = mutableMapOf<Tab, TerminalSession>()
         private var autocorrect: Autocorrect? = null
         private const val AUTOCORRECT = "autocorrect"
-        private fun prefs(ctx: Context) = ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE)
         private fun autocorrecting(ctx: Context) = prefs(ctx).getBoolean(AUTOCORRECT, true)
         private var shown = Tab.Claude
         private val current get() = sessions[shown]
@@ -602,12 +633,6 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
 
         /** Whether the app is on screen; Claude's alerts only become phone notifications when not. */
         @Volatile var visible = false
-
-        /** Whether setup (or a module's install) is running; modules wait for it. */
-        val settingUp get() = busy.get()
-
-        /** The activity that's showing, if any, for a module's dialogs. Main thread only. */
-        val foreground: Activity? get() = ui
 
         private fun tabOf(s: TerminalSession) = sessions.entries.find { it.value === s }?.key
         private fun finishAll() = sessions.values.forEach { it.finishIfRunning() }
@@ -648,6 +673,7 @@ class MainActivity : Activity(), TerminalViewClient, TerminalSessionClient {
                 main.post { ui?.showLog() }
                 return
             }
+            if (tab == Tab.Claude) sandbox.updateClaude()
             main.post {
                 // Without an activity there's no client to give the session; the next onCreate
                 // finds no session and boots, which goes straight to launching.

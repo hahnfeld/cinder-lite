@@ -3,10 +3,9 @@ package app.cinder.module
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.view.Menu
 import app.cinder.Sandbox
+import app.cinder.prefs
 import app.cinder.module.dev.AppDevelopment
 import app.cinder.module.phone.PhoneUse
 import app.cinder.module.traffic.NetworkMonitor
@@ -33,7 +32,7 @@ interface Module {
     /**
      * Manifest components only it uses, on only while the module is: an accessibility service the
      * user never wanted doesn't sit in Settings, and a VPN service nothing asked for can't start.
-     * Most are android:enabled="false" in the manifest until then (see there for the exception).
+     * They're android:enabled="false" in the manifest until then.
      */
     val components: List<Class<*>> get() = emptyList()
 
@@ -46,7 +45,10 @@ interface Module {
     /** Request files in /root/.cinder it answers (see SessionService), only while it's on. */
     val requests: Set<String> get() = emptySet()
 
-    /** One of its [requests], with the file's contents (the file is gone by now). On a binder thread. */
+    /**
+     * One of its [requests], with the file's contents (the file is gone by now). On SessionService's
+     * FileObserver thread, which every request shares: hand anything slow to a thread of its own.
+     */
     fun onRequest(ctx: Context, name: String, text: String) {}
 
     // ---- turning it on and off (MainActivity's ⋮ → Modules) ----
@@ -69,31 +71,25 @@ interface Module {
     /** Deletes what [downloads] describes. Off the main thread. */
     fun deleteDownloads(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {}
 
-    /** What to do next once it's on, for the "it's on" dialog; null if nothing. */
-    val nextStep: String? get() = null
+    /** What the user still has to do outside Cinder Lite once it's on, for the "it's on" dialog; null if nothing. */
+    fun nextStep(ctx: Context): String? = null
+
+    /**
+     * It's just been turned on (and installed): asks the user for whatever Android needs their say-so
+     * for (permissions, consents), so everything it does works from now on. After the "it's on" dialog.
+     */
+    fun turnedOn(activity: Activity) {}
 
     /** Ends what it's running and any switch of its own (Shizuku): it's being turned off. */
     fun turnedOff(ctx: Context) = stop(ctx)
 
-    /**
-     * Was this install already using it, before modules existed? Then it starts out on, so an update
-     * changes nothing for the user. Asked once.
-     */
-    fun isInUse(ctx: Context, sandbox: Sandbox): Boolean
-
     // ---- while it's on ----
 
-    /** SessionService has started: anything that should run while sessions do. */
+    /** SessionService has started, or it was just turned on: anything that should run while sessions do. */
     fun start(ctx: Context) {}
 
     /** ⋮ → Stop: end anything it's running. Asked of every module, on or off. */
     fun stop(ctx: Context) {}
-
-    /** Its own items in ⋮, below the base ones. */
-    fun menu(activity: Activity, menu: Menu) {}
-
-    /** MainActivity got [intent] (onCreate or onNewIntent): one of this module's, perhaps. */
-    fun onIntent(activity: Activity, intent: Intent) {}
 
     fun onResume(activity: Activity) {}
 
@@ -107,15 +103,13 @@ object Modules {
     val all: List<Module> = listOf(PhoneUse, NetworkMonitor, AppDevelopment)
 
     private const val KEY = "modules"
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences("cinder", Context.MODE_PRIVATE)
 
     fun enabled(ctx: Context): List<Module> {
-        migrate(ctx)
         val ids = prefs(ctx).getStringSet(KEY, emptySet()).orEmpty()
         return all.filter { it.id in ids }
     }
 
-    fun isOn(ctx: Context, module: Module) = module.id in prefs(ctx).getStringSet(KEY, emptySet()).orEmpty()
+    fun isOn(ctx: Context, module: Module) = module in enabled(ctx)
 
     /** The module that answers request file [name], if one is on. */
     fun answering(ctx: Context, name: String) = enabled(ctx).find { name in it.requests }
@@ -123,13 +117,18 @@ object Modules {
     /** Every module's request file names, on or off: a request for one that's off is dropped. */
     val requests get() = all.flatMap { it.requests }.toSet()
 
-    /** Turns [module] on or off: the setting, then its components. Its files follow at the next session start. */
+    /** Turns [module] on or off: the setting, its components, then [Module.start] or [Module.turnedOff]. Its files follow at the next session start. */
     fun set(ctx: Context, module: Module, on: Boolean) {
         val ids = prefs(ctx).getStringSet(KEY, emptySet()).orEmpty().toMutableSet()
         if (on) ids += module.id else ids -= module.id
         prefs(ctx).edit().putStringSet(KEY, ids).commit()
-        if (!on) runCatching { module.turnedOff(ctx) }
-        components(ctx, module, on)
+        if (on) {
+            components(ctx, module, true)
+            runCatching { module.start(ctx) }
+        } else {
+            runCatching { module.turnedOff(ctx) }
+            components(ctx, module, false)
+        }
     }
 
     private fun components(ctx: Context, module: Module, on: Boolean) {
@@ -141,19 +140,5 @@ object Modules {
             val name = ComponentName(ctx, c)
             if (pm.getComponentEnabledSetting(name) != state) pm.setComponentEnabledSetting(name, state, PackageManager.DONT_KILL_APP)
         }
-    }
-
-    /**
-     * The first time this version runs, turns on the modules the install already used, so updating
-     * changes nothing; a new install starts with none. Then matches components to the settings, in
-     * case they ever disagree.
-     */
-    @Synchronized
-    private fun migrate(ctx: Context) {
-        if (prefs(ctx).contains(KEY)) return
-        val sandbox = Sandbox(ctx)
-        val inUse = all.filter { runCatching { it.isInUse(ctx, sandbox) }.getOrDefault(false) }
-        prefs(ctx).edit().putStringSet(KEY, inUse.map { it.id }.toSet()).commit()
-        all.forEach { components(ctx, it, it in inUse) }
     }
 }

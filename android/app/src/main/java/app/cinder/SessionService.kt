@@ -18,8 +18,6 @@ import android.widget.Toast
 import app.cinder.module.Modules
 import org.json.JSONObject
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.LinkOption
 
 /**
  * Keeps Claude Code (and a first-run download) alive while the app is in the background.
@@ -35,7 +33,7 @@ import java.nio.file.LinkOption
  *
  * It also handles the requests the sandbox's helper scripts leave in home/.cinder while sessions
  * run: xdg-open's URLs (OAuth login) and files, Claude Code's own notifications (from the hooks in
- * assets/claude-settings.json), which become phone notifications while the app isn't on screen, and
+ * assets/cinder-settings.json), which become phone notifications while the app isn't on screen, and
  * the requests of modules that are on (Module.requests). One watcher for them all: Android delivers
  * a directory's events to only one FileObserver per process.
  */
@@ -49,6 +47,7 @@ class SessionService : Service() {
         super.onCreate()
         val dir = File(filesDir, "home/.cinder").apply { mkdirs() }
         val moduleRequests = Modules.requests
+        // Helpers write a temp file and rename it into place (MOVED_TO); the temp names match nothing here.
         watcher = object : FileObserver(dir, MOVED_TO or CLOSE_WRITE) {
             override fun onEvent(event: Int, path: String?) {
                 when (path) {
@@ -68,13 +67,9 @@ class SessionService : Service() {
 
     /**
      * Reads a request file and removes it. Anything in the sandbox can write these, so only a small
-     * regular file is read: not a link (to /dev/zero, say), a pipe that would block, or a huge file.
+     * regular file is read ([readSandboxFile]): not a link (to /dev/zero, say), a pipe that would block, or a huge file.
      */
-    private fun take(file: File) = runCatching {
-        val path = file.toPath()
-        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.size(path) > 1 shl 16) ""
-        else Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS).use { String(it.readBytes()) }
-    }.getOrDefault("").also { file.delete() }
+    private fun take(file: File) = readSandboxFile(file).orEmpty().also { file.delete() }
 
     /** Only web pages, in a browser: anything in the sandbox can call xdg-open, and other schemes
      *  (or an https link another app claims) reach payment, SMS and other apps' deep links. */
@@ -90,13 +85,10 @@ class SessionService : Service() {
 
     /**
      * A sandbox file, in the app the user picks: never one chosen for them, since anything in the
-     * sandbox can call xdg-open. Hidden files (logins, keys) and APKs (installing is the user's
-     * call, from their Download folder) aren't handed out.
+     * sandbox can call xdg-open. Only what [SharedFiles.shareable] allows: no hidden files or APKs.
      */
     private fun openFile(guest: String) {
-        if (guest.split('/').any { it.startsWith(".") } || guest.endsWith(".apk", ignoreCase = true)) return
-        val file = Sandbox(applicationContext).hostFile(guest)
-        if (!SharedFiles.shareable(this, file)) return
+        val file = SharedFiles.shareable(this, Sandbox(applicationContext).hostFile(guest)) ?: return
         val type = SharedFiles.type(file)
         val view = Intent(Intent.ACTION_VIEW).setDataAndType(SharedFiles.uri(this, file), type)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -195,13 +187,13 @@ class SessionService : Service() {
         private const val ID = 9002
         private const val ACTION_STOP = "app.cinder.STOP"
         private const val WAKE_LOCK_MS = 60 * 60 * 1000L
-        /** Claude's alerts, and modules' asks (Network Monitor's "Claude wants to watch"). */
-        const val ALERT_CHANNEL = "cinder-alerts"
+        /** Claude's alerts: it's finished, or needs something. */
+        private const val ALERT_CHANNEL = "cinder-alerts"
         private const val ALERT_ID = 9003
         private const val LONG_TURN_MS = 60_000L
 
         /** The notification manager, with [ALERT_CHANNEL] set up; null if the user has turned those off. */
-        fun alerts(ctx: Context): NotificationManager? {
+        private fun alerts(ctx: Context): NotificationManager? {
             val nm = ctx.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
                 NotificationChannel(ALERT_CHANNEL, "Claude Code alerts", NotificationManager.IMPORTANCE_HIGH)

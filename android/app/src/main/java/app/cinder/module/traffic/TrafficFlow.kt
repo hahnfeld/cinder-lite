@@ -8,37 +8,26 @@ import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.util.Log
 import android.widget.Toast
-import app.cinder.MainActivity
 import app.cinder.Sandbox
+import app.cinder.module.Modules
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.concurrent.thread
 
 /**
- * Getting from "watch" to [TrafficVpn] running: mitmproxy and its certificate, the user's trust in
- * that certificate, Android's VPN consent. ⋮ → Watch network traffic starts it, and so does the
- * user's yes to Claude's `traffic start` ([askToWatch]).
+ * Getting Network Monitor ready when it's checked: mitmproxy and its certificate (the install), then
+ * the user's trust in that certificate and Android's VPN consent ([turnOn]). Then `traffic start`
+ * and `traffic stop` run captures ([NetworkMonitor.onRequest], [TrafficVpn]) with no more asking.
  */
 object TrafficFlow {
-    private const val TAG = "cinder"
     /** MainActivity's request code for Android's VPN consent (modules' codes are 100+). */
     const val VPN = 100
-    /** SessionService's ask to watch traffic for Claude: the package names, or none for every app. */
-    const val WATCH = "app.cinder.WATCH"
-    /** When Claude asked; the ask lapses after [ASK_MS], as long as `traffic start` waits for it. */
-    const val ASKED = "app.cinder.ASKED"
-    const val ASK_MS = 120_000L
     private const val SETTINGS_SEARCH = "com.android.settings.action.SETTINGS_SEARCH"
 
     private val main = Handler(Looper.getMainLooper())
-    private val preparing = AtomicBoolean(false)   // watch(): installing mitmproxy, making the certificate
-    // What's to be watched while the user is in Settings (the certificate) or Android's VPN consent.
-    private var pendingWatch: List<String>? = null
-    private var pendingVpn: List<String>? = null
+    // Waiting on the user, who's in Settings trusting the certificate.
+    private var pendingTrust = false
 
-    private fun toast(ctx: Context, text: String) = main.post { Toast.makeText(ctx, text, Toast.LENGTH_LONG).show() }
+    private fun toast(ctx: Context, text: String) { main.post { Toast.makeText(ctx, text, Toast.LENGTH_LONG).show() } }
 
     // ---------------- mitmproxy and its certificate ----------------
 
@@ -60,86 +49,25 @@ object TrafficFlow {
         check(caCert(sandbox).exists()) { "couldn't make the certificate" }
     }
 
-    // ---------------- from "watch" to watching ----------------
+    // ---------------- checked: the user's say-so ----------------
 
-    /**
-     * Claude's `traffic start`, by way of SessionService: the user decides, every time, and only
-     * while Claude is still waiting for the answer ([ASK_MS]); a late yes starts nothing.
-     */
-    fun askToWatch(activity: Activity, intent: Intent) {
-        val apps = intent.getStringArrayExtra(WATCH)?.toList() ?: return
-        intent.removeExtra(WATCH)
-        val asked = intent.getLongExtra(ASKED, 0)
-        fun lapsed() = System.currentTimeMillis() - asked > ASK_MS
-        if (TrafficVpn.running || activity.isFinishing) return
-        if (lapsed()) {
-            toast(activity, "Claude's request to watch network traffic has expired")
-            return
-        }
-        // Only apps that can run: watching a turned-off one (Chrome, on a phone that browses with
-        // Chrome Beta) would show nothing at all.
-        val pm = activity.packageManager
-        val installed = apps.filter { runCatching { pm.getApplicationInfo(it, 0).enabled }.getOrDefault(false) }
-        if (apps.isNotEmpty() && installed.isEmpty()) {
-            toast(activity, "Claude asked to watch apps that aren't on this phone or are turned off: ${apps.joinToString()}")
-            TrafficVpn.answer(activity, "failed: none of those apps is on this phone and turned on (phone apps lists them)")
-            return
-        }
-        val what = if (installed.isEmpty()) "every app" else installed.joinToString {
-            pm.getApplicationLabel(pm.getApplicationInfo(it, 0)).toString()
-        }
-        AlertDialog.Builder(activity)
-            .setTitle("Watch network traffic?")
-            .setMessage("Claude wants to see what $what on this phone sends and receives over the network, " +
-                "until you stop it (Stop in its notification). Passwords, tokens and cookies stay hidden from Claude.")
-            .setPositiveButton("Watch") { _, _ ->
-                if (lapsed()) toast(activity, "Claude's request to watch network traffic has expired")
-                else {
-                    TrafficVpn.answer(activity, "accepted")
-                    watch(activity, installed)
-                }
-            }
-            .setNegativeButton("Don't") { _, _ -> TrafficVpn.answer(activity, "declined") }
-            .setOnCancelListener { TrafficVpn.answer(activity, "declined") }
-            .show()
-    }
+    /** Network Monitor was just turned on (and installed): the certificate, then the VPN consent. */
+    fun turnOn(activity: Activity) = trust(activity)
 
-    /**
-     * ⋮ → Watch network traffic, or the user's yes to Claude: mitmproxy if it's missing (turning
-     * Network Monitor on installed it; Reinstall sandbox takes it away), then the certificate
-     * ([trust]), then Android's VPN consent ([consent]); [TrafficVpn] does the rest.
-     */
-    fun watch(activity: Activity, apps: List<String>) {
-        if (MainActivity.settingUp || !preparing.compareAndSet(false, true)) return
-        val app = activity.applicationContext
-        val sandbox = Sandbox(app)
-        thread {
-            try {
-                if (!hasMitmproxy(sandbox)) {
-                    toast(app, "Getting mitmproxy to watch traffic with (once, about a minute)…")
-                    installMitmproxy(sandbox) { Log.i(TAG, it) }
-                }
-                ensureCa(sandbox) { Log.i(TAG, it) }
-                main.post { MainActivity.foreground?.let { trust(it, apps) } }
-            } catch (e: Exception) {
-                Log.e(TAG, "can't watch traffic", e)
-                toast(app, "Couldn't set up watching: ${e.message}")
-                TrafficVpn.answer(app, "failed: ${e.message}")
-            } finally {
-                preparing.set(false)
-            }
-        }
+    /** The user backed out of the asks, so it couldn't capture: back off, as if they'd never checked it. */
+    private fun backOut(ctx: Context) {
+        Modules.set(ctx, NetworkMonitor, false)
+        toast(ctx, "Network Monitor is off")
     }
 
     /**
      * HTTPS is readable only once the user trusts Cinder Lite's certificate in Settings: since
      * Android 11 no app can install one or open that screen, so the certificate waits in Downloads.
      */
-    private fun trust(activity: Activity, apps: List<String>) {
+    private fun trust(activity: Activity) {
         val cert = caCert(Sandbox(activity.applicationContext))
-        if (TrafficVpn.trusted(cert)) return consent(activity, apps, decrypt = true)
-        runCatching { TrafficVpn.saveToDownloads(activity, cert) }
-            .onFailure { Log.e(TAG, "can't save the certificate", it); return consent(activity, apps, decrypt = false) }
+        if (TrafficVpn.trusted(cert)) return consent(activity)
+        runCatching { TrafficVpn.saveToDownloads(activity, cert) }.onFailure { return consent(activity) }
         AlertDialog.Builder(activity)
             .setTitle("Read HTTPS too?")
             .setMessage("To read what apps send over HTTPS, Android needs you to trust Cinder Lite's certificate, once:\n\n" +
@@ -150,34 +78,32 @@ object TrafficFlow {
                 "you add (Chrome, apps you build) can be read; for the rest you see which hosts they reach.\n\n" +
                 "Remove it when you're done: Settings → Trusted credentials → User.")
             .setPositiveButton("Open Settings") { _, _ ->
-                pendingWatch = apps
+                pendingTrust = true
                 runCatching { activity.startActivity(Intent(SETTINGS_SEARCH)) }
                     .recoverCatching { activity.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) }
             }
-            .setNeutralButton("Without HTTPS") { _, _ -> consent(activity, apps, decrypt = false) }
-            .setNegativeButton("Cancel") { _, _ -> TrafficVpn.answer(activity, "declined") }
-            .setOnCancelListener { TrafficVpn.answer(activity, "declined") }
+            .setNeutralButton("Without HTTPS") { _, _ -> consent(activity) }
+            .setNegativeButton("Cancel") { _, _ -> backOut(activity) }
+            .setOnCancelListener { backOut(activity) }
             .show()
     }
 
     /** Back from Settings, where the user may have trusted the certificate. */
     fun resume(activity: Activity) {
-        pendingWatch?.let { pendingWatch = null; trust(activity, it) }
+        if (pendingTrust) { pendingTrust = false; trust(activity) }
     }
 
-    /** Android's own VPN consent, the first time only; then [TrafficVpn] starts. */
-    private fun consent(activity: Activity, apps: List<String>, decrypt: Boolean) {
-        val flag = File(Sandbox(activity.applicationContext).tmp, "cinder-traffic/decrypt").apply { parentFile?.mkdirs() }
-        if (decrypt) flag.writeText("") else flag.delete()
-        val ask = VpnService.prepare(activity) ?: return TrafficVpn.start(activity, apps)
-        pendingVpn = apps
+    /** Android's own VPN consent, the first time only. */
+    private fun consent(activity: Activity) {
+        val ask = VpnService.prepare(activity) ?: return ready(activity)
         @Suppress("DEPRECATION")
         activity.startActivityForResult(ask, VPN)
     }
 
     /** Android's answer to [consent]'s ask. */
     fun consented(activity: Activity, granted: Boolean) {
-        if (granted) pendingVpn?.let { TrafficVpn.start(activity, it) } else TrafficVpn.answer(activity, "declined")
-        pendingVpn = null
+        if (granted) ready(activity) else backOut(activity)
     }
+
+    private fun ready(ctx: Context) = toast(ctx, "Network Monitor is ready: Claude starts a capture with traffic start")
 }

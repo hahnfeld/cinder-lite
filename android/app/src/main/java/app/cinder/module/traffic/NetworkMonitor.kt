@@ -1,22 +1,17 @@
 package app.cinder.module.traffic
 
 import android.app.Activity
-import android.app.Notification
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
-import android.view.Menu
-import app.cinder.MainActivity
+import android.net.VpnService
 import app.cinder.Sandbox
-import app.cinder.SessionService
 import app.cinder.module.Module
 import java.io.File
 
 /**
  * Network Monitor: what apps on the phone send and receive, through a VPN into mitmproxy in the
- * sandbox ([TrafficVpn]), read by the `traffic` helper. Turning it on installs mitmproxy and makes
- * its certificate; trusting that certificate (for HTTPS) and Android's VPN consent come the first
- * time it watches ([TrafficFlow]).
+ * sandbox ([TrafficVpn]), read by the `traffic` helper. Turning it on installs mitmproxy, makes its
+ * certificate, and asks the user to trust it (for HTTPS) and for Android's VPN consent ([TrafficFlow]).
+ * From then on `traffic start` and `traffic stop`, Claude's or the shell's, run captures.
  */
 object NetworkMonitor : Module {
     override val id = "traffic"
@@ -24,11 +19,12 @@ object NetworkMonitor : Module {
     override val blurb = "see what apps on the phone send and receive over the network"
     override val components = listOf(TrafficVpn::class.java)
     override val download = "about 50 MB (mitmproxy)"
-    override val nextStep = "Start watching with ⋮ → Watch network traffic, or when Claude asks."
     override val requests = setOf("traffic-request")
 
-    private const val WATCH_ID = 9005
     private val PACKAGE = Regex("[A-Za-z]\\w*(\\.[A-Za-z_]\\w*)+")
+
+    override fun nextStep(ctx: Context) = "Claude captures traffic with traffic start and traffic stop (so can you, in " +
+        "the Shell). While a capture runs, Android shows a key icon and calls and other UDP traffic don't get through."
 
     override fun isInstalled(sandbox: Sandbox) = TrafficFlow.hasMitmproxy(sandbox) && TrafficFlow.caCert(sandbox).exists()
 
@@ -37,6 +33,8 @@ object NetworkMonitor : Module {
         log("making Cinder Lite's certificate…")
         TrafficFlow.ensureCa(sandbox, log)
     }
+
+    override fun turnedOn(activity: Activity) = TrafficFlow.turnOn(activity)
 
     override fun downloads(sandbox: Sandbox) =
         if (TrafficFlow.hasMitmproxy(sandbox) || File(sandbox.home, ".mitmproxy").exists())
@@ -50,22 +48,9 @@ object NetworkMonitor : Module {
             "User → Cinder Lite → Uninstall. Its key is gone, so it can't be used, but there's no reason to keep it.")
     }
 
-    /** mitmproxy or its certificate from before modules existed. */
-    override fun isInUse(ctx: Context, sandbox: Sandbox) = TrafficFlow.hasMitmproxy(sandbox) || File(sandbox.home, ".mitmproxy").exists()
-
     override fun start(ctx: Context) = TrafficVpn.forgetStale(ctx)
 
     override fun stop(ctx: Context) = TrafficVpn.stop(ctx)
-
-    override fun menu(activity: Activity, menu: Menu) {
-        menu.add("Watch network traffic").setCheckable(true).setChecked(TrafficVpn.running)
-            .setOnMenuItemClickListener {
-                if (TrafficVpn.running) TrafficVpn.stop(activity) else TrafficFlow.watch(activity, emptyList())
-                true
-            }
-    }
-
-    override fun onIntent(activity: Activity, intent: Intent) = TrafficFlow.askToWatch(activity, intent)
 
     override fun onResume(activity: Activity) = TrafficFlow.resume(activity)
 
@@ -76,36 +61,27 @@ object NetworkMonitor : Module {
     }
 
     /**
-     * Claude's `traffic start [app…]` and `traffic stop`. Stopping needs no one's say-so; starting is
-     * always the user's call, on screen ([TrafficFlow.askToWatch]), through a notification when the
-     * app isn't showing. The ask lapses after [TrafficFlow.ASK_MS], when the helper stops waiting.
+     * `traffic start [app…]` and `traffic stop`. Turning the module on was the user's say-so, so a
+     * capture starts at once; what failed goes back to the helper waiting on it ([TrafficVpn.answer]).
      */
     override fun onRequest(ctx: Context, name: String, text: String) {
         val words = text.trim().split(Regex("\\s+"))
         when (words.first()) {
             "stop" -> TrafficVpn.stop(ctx)
             "start" -> {
-                val apps = words.drop(1).filter { it.matches(PACKAGE) }.take(20)
-                val ask = Intent(ctx, MainActivity::class.java).putExtra(TrafficFlow.WATCH, apps.toTypedArray())
-                    .putExtra(TrafficFlow.ASKED, System.currentTimeMillis())
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (MainActivity.visible) {
-                    runCatching { ctx.startActivity(ask) }
-                    return
-                }
-                // Notifications off: nothing would reach the user, so say so rather than leave Claude waiting.
-                val nm = SessionService.alerts(ctx) ?: return TrafficVpn.answer(ctx, "unreachable")
-                nm.notify(
-                    WATCH_ID, Notification.Builder(ctx, SessionService.ALERT_CHANNEL)
-                        .setContentTitle("Claude Code")
-                        .setContentText("Claude wants to watch network traffic. Tap to decide")
-                        .setSmallIcon(android.R.drawable.stat_notify_chat)
-                        .setContentIntent(PendingIntent.getActivity(ctx, 2, ask,
-                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
-                        .setAutoCancel(true)
-                        .setTimeoutAfter(TrafficFlow.ASK_MS)
-                        .build()
-                )
+                if (TrafficVpn.running) return
+                if (VpnService.prepare(ctx) != null) return TrafficVpn.answer(ctx, "failed: Android's VPN consent " +
+                    "is missing (the user can turn Network Monitor off and on in ⋮ → Modules to give it)")
+                // Only apps that can run: watching a turned-off one (Chrome, on a phone that browses with
+                // Chrome Beta) would show nothing at all.
+                val asked = words.drop(1).filter { it.matches(PACKAGE) }.take(20)
+                // Its own traffic is how the capture leaves the phone (mitmproxy's, Claude's): into the VPN, it would loop.
+                if (ctx.packageName in asked) return TrafficVpn.answer(ctx, "failed: Cinder Lite's own traffic can't be " +
+                    "captured: it's how the capture itself reaches the network")
+                val apps = asked.filter { runCatching { ctx.packageManager.getApplicationInfo(it, 0).enabled }.getOrDefault(false) }
+                if (asked.isNotEmpty() && apps.isEmpty()) return TrafficVpn.answer(ctx,
+                    "failed: none of those apps is on this phone and turned on (phone apps lists them)")
+                runCatching { TrafficVpn.start(ctx, apps) }.onFailure { TrafficVpn.answer(ctx, "failed: ${it.message}") }
             }
         }
     }

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """traffic: what apps on this phone send and receive, as Cinder Lite captures it (Android only).
 
-The user turns watching on in Cinder Lite (⋮ → Watch network traffic), or agrees on screen after
-traffic start. HTTPS is readable only from apps that accept user-installed certificates (Chrome,
-debug builds); other apps' connections show their hostname only.
+Captures run from traffic start to traffic stop, while the user has Network Monitor on (⋮ → Modules).
+HTTPS is readable only from apps that accept user-installed certificates (Chrome, debug builds);
+other apps' connections show their hostname only.
   traffic [filter]       the requests, numbered (filter: text in the method, URL, status or type)
   traffic show N         one request and its response: headers, and text bodies up to 64 KB
-  traffic start [app…]   ask the user to watch all apps, or only these (package names)
-  traffic stop           stop watching; the phone's network goes back to normal
+  traffic start [app…]   start capturing all apps, or only these (package names)
+  traffic stop           stop capturing; the phone's network goes back to normal
   traffic status         whether it's watching, what, and whether HTTPS is readable
   traffic clear          forget what's been captured
   traffic save           everything as a HAR file in /sdcard/Download (Chrome DevTools, Charles, Reqable)
@@ -40,11 +40,14 @@ def hide_url(url):
     return urlunsplit(parts._replace(query=hide_form(parts.query))) if parts.query else url
 
 
-def hide_json(value):
+def hide_json(value, secret=False):
+    """Every value under a secret-sounding key is hidden, however deep (lists and objects too)."""
     if isinstance(value, dict):
-        return {k: HIDDEN if SECRET.search(k) and not isinstance(v, (dict, list)) else hide_json(v) for k, v in value.items()}
+        return {k: hide_json(v, secret or bool(SECRET.search(k))) for k, v in value.items()}
     if isinstance(value, list):
-        return [hide_json(v) for v in value]
+        return [hide_json(v, secret) for v in value]
+    if secret:
+        return HIDDEN
     if isinstance(value, str) and value.startswith(("http://", "https://")):
         return hide_url(value)   # a URL echoed back, tokens and all
     return value
@@ -87,7 +90,7 @@ def status():
     try:
         return open(STATE).read().strip()
     except FileNotFoundError:
-        return "not watching. The user can turn it on: ⋮ → Watch network traffic (or ask with traffic start)"
+        return "not watching (traffic start starts a capture)"
 
 
 def listing(filt):
@@ -159,20 +162,15 @@ def show(n):
         print(clean(f"\n-- failed: {flow.error.msg}"))
 
 
-def ask(words, until, wait):
-    """Leaves the request where the app watches for it (SessionService), then waits for until()."""
+def request(words, done, wait):
+    """Leaves the request where the app watches for it (SessionService), then waits for done()."""
     try:
         os.remove(ANSWER)
     except FileNotFoundError:
         pass
-    os.makedirs("/root/.cinder", exist_ok=True)
     with open("/root/.cinder/traffic-request.tmp", "w") as f:
         f.write(" ".join(words) + "\n")
     os.replace("/root/.cinder/traffic-request.tmp", "/root/.cinder/traffic-request")
-    return until_(until, wait)
-
-
-def until_(done, wait):
     end = time.time() + wait
     while time.time() < end:
         if done():
@@ -182,33 +180,11 @@ def until_(done, wait):
 
 
 def answer():
-    """What the app said about a traffic start: accepted, declined, unreachable, failed: why."""
+    """Why a traffic start failed, if the app said."""
     try:
         return open(ANSWER).read().strip()
     except FileNotFoundError:
         return None
-
-
-def start(apps):
-    print("Asked the user on the phone's screen; waiting for their answer (up to 2 minutes)…", flush=True)
-    watching = lambda: os.path.exists(STATE)
-    ask(["start"] + apps, lambda: watching() or answer(), 125)
-    if answer() == "accepted":
-        print("The user agreed; starting…", flush=True)
-        until_(lambda: watching() or answer() != "accepted", 120)
-    if watching():
-        print(status())
-        return
-    why = {
-        None: "the user didn't answer in time, and the request has expired",
-        "accepted": "the user agreed, but it hasn't started yet (they may be trusting the certificate in Settings); "
-                    "traffic status shows when it's on",
-        "declined": "the user said no",
-        "unreachable": "Cinder Lite isn't on screen and its notifications are off, so the user can't be asked. "
-                       "Ask them to open Cinder Lite, then try again",
-    }
-    a = answer()
-    sys.exit("traffic: not watching: " + why.get(a, a))
 
 
 def main(args):
@@ -225,11 +201,16 @@ def main(args):
             sys.exit("traffic: give apps by package name (com.android.chrome); phone apps lists them")
         if os.path.exists(STATE):
             sys.exit(f"traffic: already {status()}. traffic stop first to change what's watched")
-        start(apps)
+        print("starting (mitmproxy takes a few seconds)…", flush=True)
+        watching = lambda: status().startswith("watching")
+        if request(["start"] + apps, lambda: watching() or answer(), 90) and watching():
+            print(status())
+        else:
+            sys.exit("traffic: not watching: " + (answer() or "Cinder Lite didn't start it (is the app running?)"))
     elif cmd == "stop":
         if not os.path.exists(STATE):
             print("not watching")
-        elif ask(["stop"], lambda: not os.path.exists(STATE), 15):
+        elif request(["stop"], lambda: not os.path.exists(STATE), 15):
             print("stopped watching")
         else:
             sys.exit("traffic: it didn't stop; the user can use Stop in its notification")

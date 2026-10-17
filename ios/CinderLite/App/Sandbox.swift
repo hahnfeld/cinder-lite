@@ -19,8 +19,6 @@ final class Sandbox {
     let requests: URL
     let downloads: URL
     let workspace: URL
-    /// Which modules are installed (Modules), one empty file each; cleared with the root.
-    let installed: URL
     private let stamp: URL
 
     private init() {
@@ -34,7 +32,6 @@ final class Sandbox {
         downloads = host.appendingPathComponent("dl")
         workspace = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
         stamp = base.appendingPathComponent(".bootstrap-v1")
-        installed = base.appendingPathComponent("modules-installed")
     }
 
     var isBootstrapped: Bool { FileManager.default.fileExists(atPath: stamp.path) }
@@ -57,7 +54,7 @@ final class Sandbox {
             try CinderKernel.importRootArchive(archive, into: root.path, progress: nil)
             try "1".write(to: stamp, atomically: true, encoding: .utf8)
         }
-        try writeHelpers()
+        writeHelpers()
     }
 
     /// Mounts the root and the host folders and starts init. Once per process.
@@ -69,6 +66,10 @@ final class Sandbox {
         ["/usr/local/bin": bin, "/usr/local/libexec": libexec, "/root/.cinder": requests, "/usr/local/dl": downloads,
          "/workspace": workspace]
     }
+
+    /// The host folders whose files the sandbox can see by name: the root and the mounts, but not
+    /// /root/.cinder (hidden; it holds the app's requests and iCTRL's pairing key).
+    var visible: [URL] { [guestFile("/"), bin, libexec, downloads, workspace] }
 
     /// The real file behind a path in the sandbox, through the same mounts as boot.
     func hostFile(_ guest: String) -> URL {
@@ -82,11 +83,16 @@ final class Sandbox {
     func requestReset() { UserDefaults.standard.set(true, forKey: Self.resetKey) }
     private static let resetKey = "resetPending"
 
-    /// Back to a fresh install: the root, with everything installed into it, and Claude Code's
-    /// binaries. As on Android, the login, settings and history stay: /root (but Claude Code itself)
-    /// is moved aside first and cinder-setup puts it back. /workspace isn't in the root.
+    /// Back to a fresh install: the root, with everything installed into it, Claude Code's binaries,
+    /// and the helper folders (rewritten at launch, whatever the sandbox left in them). As on Android,
+    /// the login, settings and history stay: /root (but Claude Code itself) is moved aside first and
+    /// cinder-setup puts it back. /workspace isn't in the root.
     private func reset() throws {
         let fm = FileManager.default
+        for dir in [bin, libexec] {
+            try? fm.removeItem(at: dir)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
         let keep = downloads.appendingPathComponent("keep")
         if !fm.fileExists(atPath: keep.path) {
             let home = guestFile("/root")
@@ -99,7 +105,6 @@ final class Sandbox {
         }
         try? fm.removeItem(at: stamp)
         try? fm.removeItem(at: root)
-        try? fm.removeItem(at: installed)   // modules' packages were in the root
         for name in ["claude-installer", "progress", "error", "request"] {
             try? fm.removeItem(at: downloads.appendingPathComponent(name))
         }
@@ -109,8 +114,9 @@ final class Sandbox {
     /// The bundled scripts and settings, rewritten every launch (an app update's fixes reach
     /// existing installs) and whenever a module is turned on or off: the base's, then each enabled
     /// module's (Guest/modules/<id>/bin), while a disabled module's helpers are removed. Claude's
-    /// brief is the base's, the line about modules, then each enabled module's brief.md.
-    func writeHelpers() throws {
+    /// brief is the base's, the line about modules, then each enabled module's brief.md. A file that
+    /// can't be written is skipped: the sandbox can put things in the way, and it mustn't stop the app.
+    func writeHelpers() {
         let guest = Bundle.main.url(forResource: "Guest", withExtension: nil)!
         let modules = guest.appendingPathComponent("modules")
         var dirs = [(guest.appendingPathComponent("bin"), bin), (guest.appendingPathComponent("libexec"), libexec)]
@@ -121,32 +127,36 @@ final class Sandbox {
         }
         for (from, to) in dirs {
             for name in files(in: from) where name != "cinder-brief.md" {
-                try install(Data(contentsOf: from.appendingPathComponent(name)), as: to.appendingPathComponent(name))
+                try? install(Data(contentsOf: from.appendingPathComponent(name)), as: to.appendingPathComponent(name))
             }
         }
-        var brief = try String(contentsOf: guest.appendingPathComponent("libexec/cinder-brief.md"), encoding: .utf8)
-        brief += Modules.briefLine + "\n"
-        for module in Modules.enabled {
-            brief += try String(contentsOf: modules.appendingPathComponent("\(module.id)/brief.md"), encoding: .utf8)
-        }
-        try install(Data(brief.utf8), as: libexec.appendingPathComponent("cinder-brief.md"))
+        func text(_ path: String) -> String { (try? String(contentsOf: guest.appendingPathComponent(path), encoding: .utf8)) ?? "" }
+        let brief = text("libexec/cinder-brief.md") + Modules.briefLine + "\n" +
+            Modules.enabled.map { text("modules/\($0.id)/brief.md") }.joined()
+        try? install(Data(brief.utf8), as: libexec.appendingPathComponent("cinder-brief.md"))
     }
 
-    /// A bundled folder's files, without what development leaves around (dotfiles, .claude, __pycache__).
+    /// A bundled folder's files, without dotfiles (the build takes out .claude and __pycache__).
     private func files(in dir: URL) -> [String] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-        return names.filter { !$0.hasPrefix(".") && $0 != "__pycache__" }.sorted()
+        return names.filter { !$0.hasPrefix(".") }.sorted()
     }
 
-    /// Through a temp file and a rename, so a running script keeps its file.
+    /// Through a temp file and a rename, so a running script keeps its file. The folders are the
+    /// sandbox's to write too, so nothing it put there is followed: whatever is at the temp name goes
+    /// first, the temp file is created new (not through a link), and the rename replaces the name itself.
     private func install(_ data: Data, as file: URL) throws {
         let part = file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).part")
-        try data.write(to: part)
+        try? FileManager.default.removeItem(at: part)
         // Scripts run as commands; the brief and the settings are only read.
         let name = file.lastPathComponent
-        let mode = name.hasSuffix(".md") || name.hasSuffix(".json") ? 0o644 : 0o755
-        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: part.path)
-        _ = try FileManager.default.replaceItemAt(file, withItemAt: part)
+        let mode: mode_t = name.hasSuffix(".md") || name.hasSuffix(".json") ? 0o644 : 0o755
+        let fd = open(part.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        try handle.write(contentsOf: data)
+        fchmod(fd, mode)   // whatever the umask took off
+        guard rename(part.path, file.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 
     /// The environment every session starts with (Android's prelude, minus its Android parts).
@@ -169,6 +179,6 @@ final class Sandbox {
             // No telemetry, error reports or update check holding up every start (then ~10 s down to ~5 s);
             // cinder-claude runs `claude update` once a day instead.
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-        ] + Modules.enabled.flatMap(\.environment)
+        ]
     }
 }

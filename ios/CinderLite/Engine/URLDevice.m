@@ -26,6 +26,13 @@
 // guest write must never become an unkillable wait on the UI thread.
 #define URL_OPEN_TIMEOUT_SEC 5
 
+BOOL CinderURLAllowed(NSURL *url) {
+    // Modules publish their schemes in the defaults (Modules.swift), which the sandbox can't write.
+    NSString *scheme = url.scheme.lowercaseString;
+    NSArray<NSString *> *allowed = [NSUserDefaults.standardUserDefaults stringArrayForKey:@"urlSchemes"] ?: @[];
+    return scheme != nil && ([scheme isEqualToString:@"https"] || [allowed containsObject:scheme]);
+}
+
 static ssize_t url_read(struct fd *UNUSED(fd), void *UNUSED(buf), size_t UNUSED(bufsize)) {
     // There is nothing to read back. End of file, not an error: `cat /dev/url`
     // should be empty rather than fail, the same way reading /dev/null is.
@@ -59,13 +66,7 @@ static ssize_t url_write(struct fd *UNUSED(fd), const void *buf, size_t size) {
     // `echo youtube.com > /dev/url` says EINVAL instead of failing silently.
     if (url == nil || url.scheme == nil || url.scheme.length == 0)
         return _EINVAL;
-    // Cinder Lite: web pages, plus the schemes enabled modules need (Phone Use: ictrl, for iCTRL's
-    // runner), only. Anything in the sandbox can write here, and other schemes reach payment,
-    // messaging and other apps' deep links. Modules publish theirs in the defaults (Modules.swift),
-    // which the sandbox can't write.
-    NSString *scheme = url.scheme.lowercaseString;
-    NSArray<NSString *> *allowed = [NSUserDefaults.standardUserDefaults stringArrayForKey:@"urlSchemes"] ?: @[];
-    if (![scheme isEqualToString:@"https"] && ![allowed containsObject:scheme])
+    if (!CinderURLAllowed(url))
         return _EPERM;
 
     __block BOOL opened = NO;

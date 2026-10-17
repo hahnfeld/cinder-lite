@@ -43,17 +43,26 @@ class SharedFiles : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, args: Array<String>?) = 0
     override fun delete(uri: Uri, selection: String?, args: Array<String>?) = 0
 
-    private fun file(uri: Uri) = uri.path?.let(::File)?.takeIf { shareable(context ?: return null, it) }
+    /** The URI's file, checked again now: the sandbox could have swapped a link in since it was handed out. */
+    private fun file(uri: Uri): File? = uri.path?.let(::File)?.let { shareable(context ?: return null, it) }
 
     companion object {
+        /** For a file [shareable] returned: its canonical path, so what's served is what was checked. */
         fun uri(ctx: Context, file: File): Uri =
             Uri.Builder().scheme("content").authority("${ctx.packageName}.files").path(file.path).build()
 
-        /** A regular file in the app's storage (the sandbox) or the phone's shared storage. */
-        fun shareable(ctx: Context, file: File): Boolean {
-            val real = runCatching { file.canonicalFile }.getOrNull() ?: return false
-            return real.isFile && listOf(ctx.filesDir, Environment.getExternalStorageDirectory())
-                .any { real.startsWith(it.canonicalFile) }
+        /**
+         * [file] with every link resolved, if it may be handed out: a regular file in the app's storage
+         * (the sandbox) or the phone's shared storage, but not a hidden one (logins, keys) or an APK
+         * (installing is the user's call, from their Download folder). Judged by where links lead, so
+         * a link with an innocent name doesn't hand out what it points at.
+         */
+        fun shareable(ctx: Context, file: File): File? {
+            val real = runCatching { file.canonicalFile }.getOrNull() ?: return null
+            val root = listOf(ctx.filesDir, Environment.getExternalStorageDirectory()).map { it.canonicalFile }
+                .find { real.startsWith(it) } ?: return null
+            val hidden = real.relativeTo(root).path.split('/').any { it.startsWith(".") }
+            return real.takeIf { it.isFile && !hidden && !it.name.endsWith(".apk", ignoreCase = true) }
         }
 
         /** By extension; otherwise plain text unless its start looks binary, so text editors still offer. */
