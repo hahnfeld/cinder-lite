@@ -18,30 +18,70 @@ object NetworkMonitor : Module {
     override val title = "Network Monitor"
     override val blurb = "see what apps on the phone send and receive over the network"
     override val components = listOf(TrafficVpn::class.java)
-    override val download = "about 50 MB (mitmproxy)"
+    override val download = "about 90 MB (mitmproxy, apk-mitm and a Java runtime)"
     override val requests = setOf("traffic-request")
+
+    // apk-mitm runs apktool and uber-apk-signer, both Java, under proot. A JVM there needs the same
+    // coaxing App Development gives it (no CDS, no perf data, serial GC, a bounded heap); kept in
+    // step with that module's prelude. These apply only while Network Monitor is on, and if App
+    // Development is on too, its identical lines simply come later and win.
+    override val path = listOf("/usr/lib/jvm/default-jvm/bin")
+    override val prelude =
+        "export JAVA_HOME=/usr/lib/jvm/default-jvm; " +
+        "export JAVA_TOOL_OPTIONS=\"-XX:-UsePerfData -Xshare:off -XX:+UseSerialGC " +
+        "-XX:CompressedClassSpaceSize=64m -Xms16m -Xmx512m -Djava.io.tmpdir=/tmp\"; "
 
     private val PACKAGE = Regex("[A-Za-z]\\w*(\\.[A-Za-z_]\\w*)+")
 
     override fun nextStep(ctx: Context) = "Claude captures traffic with traffic start and traffic stop (so can you, in " +
         "the Shell). While a capture runs, Android shows a key icon and calls and other UDP traffic don't get through."
 
-    override fun isInstalled(sandbox: Sandbox) = TrafficFlow.hasMitmproxy(sandbox) && TrafficFlow.caCert(sandbox).exists()
+    override fun isInstalled(sandbox: Sandbox) =
+        TrafficFlow.hasMitmproxy(sandbox) && TrafficFlow.caCert(sandbox).exists() && apkMitmInstalled(sandbox)
 
     override fun install(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {
         if (!TrafficFlow.hasMitmproxy(sandbox)) TrafficFlow.installMitmproxy(sandbox, log)
         log("making Cinder Lite's certificate…")
         TrafficFlow.ensureCa(sandbox, log)
+        installApkMitm(sandbox, log)
+    }
+
+    // ---- apk-mitm: patches an APK to accept user certificates, so its HTTPS can be read ----
+    // https://github.com/shroudedcode/apk-mitm — an npm CLI that rewrites an app's network-security
+    // config and strips common certificate pinning, then re-signs it with uber-apk-signer.
+
+    private fun apkMitmBin(sandbox: Sandbox) = File(sandbox.home, ".npm-global/bin/apk-mitm")
+    private fun hasJava(sandbox: Sandbox) =
+        sandbox.installedPackages.any { it == "P:openjdk17-jre-headless" || it == "P:openjdk17-jdk" }
+    private fun apkMitmInstalled(sandbox: Sandbox) = apkMitmBin(sandbox).exists() && hasJava(sandbox)
+
+    private fun installApkMitm(sandbox: Sandbox, log: (String) -> Unit) {
+        if (!hasJava(sandbox)) {
+            log("installing a Java runtime for apk-mitm…")
+            sandbox.run("/sbin/apk add --no-cache openjdk17-jre-headless", asRoot = true, log = log)
+        }
+        log("installing apk-mitm…")
+        sandbox.run("npm install -g apk-mitm", log = log)
+        check(apkMitmBin(sandbox).exists()) { "apk-mitm didn't install (see above)" }
+        // apktool and uber-apk-signer download themselves the first time apk-mitm runs.
     }
 
     override fun turnedOn(activity: Activity) = TrafficFlow.turnOn(activity)
 
     override fun downloads(sandbox: Sandbox) =
-        if (TrafficFlow.hasMitmproxy(sandbox) || File(sandbox.home, ".mitmproxy").exists())
-            "mitmproxy (about 50 MB), its certificate and what it captured" else null
+        if (TrafficFlow.hasMitmproxy(sandbox) || File(sandbox.home, ".mitmproxy").exists() || apkMitmBin(sandbox).exists())
+            "mitmproxy, apk-mitm and their downloads (about 90 MB), the certificate and what it captured" else null
 
     override fun deleteDownloads(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {
         if (TrafficFlow.hasMitmproxy(sandbox)) sandbox.run("/sbin/apk del mitmproxy", asRoot = true, log = log)
+        if (apkMitmBin(sandbox).exists()) {
+            log("removing apk-mitm…")
+            sandbox.run("npm uninstall -g apk-mitm", log = log)
+        }
+        sandbox.deleteTree(File(sandbox.home, ".cache/apk-mitm"))   // its apktool/uber-apk-signer downloads
+        // The Java runtime apk-mitm needed, unless App Development still wants it.
+        if ("P:openjdk17-jre-headless" in sandbox.installedPackages && "P:openjdk17-jdk" !in sandbox.installedPackages)
+            sandbox.run("/sbin/apk del openjdk17-jre-headless", asRoot = true, log = log)
         sandbox.deleteTree(File(sandbox.home, ".mitmproxy"))
         sandbox.deleteTree(File(sandbox.tmp, "cinder-traffic"))
         log("If you trusted Cinder Lite's certificate, remove it too: Settings → search Trusted credentials → " +

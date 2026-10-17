@@ -131,7 +131,7 @@ the 32-bit proot loader.
   - **App Development** — building Android apps on the phone, and taking APKs apart
 
 **Storage:** the APK is ~5 MB, but after first-run setup the sandbox takes about 500 MB (Claude Code
-is ~240 MB, plus the rootfs and base tools). Network Monitor adds about 50 MB; App Development about
+is ~240 MB, plus the rootfs and base tools). Network Monitor adds about 90 MB; App Development about
 700 MB (its tools, and a copy of the device's own libraries).
 
 **Trust model:** Claude Code and anything it runs can read and write everything under `/sdcard`
@@ -222,7 +222,7 @@ on in ⋮ → **Modules**:
 | Module | What Claude can do with it | What turning it on downloads |
 |---|---|---|
 | [Phone Use](#phone-use) | run `adb shell` commands through Shizuku, and use apps on a separate phone screen | nothing |
-| [Network Monitor](#network-monitor) | see what the phone's apps send and receive | mitmproxy, ~50 MB |
+| [Network Monitor](#network-monitor) | see what the phone's apps send and receive | mitmproxy and apk-mitm, ~90 MB |
 | [App Development](#app-development) | build Android apps, and take APKs apart | ~450 MB of tools, plus a ~260 MB copy of the device's libraries |
 
 A module that's off isn't there for Claude: its commands aren't in the sandbox, Claude's brief
@@ -464,8 +464,9 @@ uses when you ask it about network traffic (and you can, in the Shell). Ask Clau
 this app send when I tap Sync?" or "why does this page load slowly?".
 
 **Turning it on.** ⋮ → **Modules** → **Network Monitor** installs
-[mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`, about 50 MB and a minute) and
-makes a certificate for it, named *Cinder Lite*. Then it asks for the two things only you can
+[mitmproxy](https://mitmproxy.org) and [apk-mitm](https://github.com/shroudedcode/apk-mitm) in the
+sandbox (about 90 MB and a minute or two, including a small Java runtime for apk-mitm) and makes a
+certificate for mitmproxy, named *Cinder Lite*. Then it asks for the two things only you can
 grant:
 
 1. To read HTTPS, Android needs you to trust that certificate. Since Android 11 no app can do this
@@ -486,8 +487,18 @@ Network Monitor off also ends it.
 apps you build yourself in debug mode, and apps that opt in. Most other apps refuse such a
 certificate. When one does, Cinder Lite lets that host's connections through untouched from then
 on, so the app keeps working (after one failed connection) and you still see the hostname. Apps that
-pin their certificates refuse it too. There's no way around this without root, and Cinder Lite
-doesn't try.
+pin their certificates refuse it too. For an app you can rebuild and reinstall there's `apk-mitm`
+(below); beyond that there's no way around this without root, and Cinder Lite doesn't try.
+
+**Making an app readable.** [`apk-mitm`](https://github.com/shroudedcode/apk-mitm) (MIT) comes with
+Network Monitor — nothing is bundled in the APK; turning the module on downloads it (`npm install -g
+apk-mitm`, with a small Java runtime). `apk-mitm app.apk` decodes the APK, swaps in a
+network-security config that trusts the certificates you add, strips the certificate pinning it
+recognises, and re-signs it as `app-patched.apk` (it fetches apktool and uber-apk-signer, both open
+source, the first time it runs). Install the patched build in place of the original — `rish` if
+Phone Use is on, otherwise `/sdcard/Download` — and `traffic` can then read its HTTPS. Only patch
+apps you're entitled to modify: the new signature means Play updates and apps that verify their own
+signature may stop working.
 
 **While a capture runs**, calls, some games and anything else using UDP, other than DNS, won't get through:
 mitmproxy's proxy only carries TCP. Browsers fall back from QUIC to ordinary HTTPS on their own.

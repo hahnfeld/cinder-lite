@@ -44,7 +44,7 @@ Everything beyond running Claude Code is an optional module, off until you check
 | Module | What Claude can do | Android | iOS |
 |---|---|---|---|
 | **Phone Use** | Use apps on the phone: open, read, tap, type, scroll | Through [Shizuku](https://shizuku.rikka.app) on a separate screen in a floating window, plus adb-shell commands | Through [iCTRL](https://github.com/OpenMinis/iCTRL), on your real screen |
-| **Network Monitor** | See what the phone's apps send and receive | A VPN into mitmproxy; captures start and stop with `traffic start` / `traffic stop` | — |
+| **Network Monitor** | See what the phone's apps send and receive | A VPN into mitmproxy; `traffic start` / `traffic stop` capture, and `apk-mitm` patches an app so its HTTPS can be read | — |
 | **App Development** | Build Android apps and take APKs apart | JDK, aapt2, d8, apksigner, apktool, jadx | — |
 
 Each module adds and removes cleanly:
