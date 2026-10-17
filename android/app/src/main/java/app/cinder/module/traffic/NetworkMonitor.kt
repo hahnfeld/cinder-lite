@@ -1,47 +1,74 @@
 package app.cinder.module.traffic
 
-import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.VpnService
+import android.provider.Settings
 import app.cinder.Sandbox
+import app.cinder.Step
 import app.cinder.module.Module
 import java.io.File
 
 /**
  * Network Monitor: what apps on the phone send and receive, through a VPN into mitmproxy in the
- * sandbox ([TrafficVpn]), read by the `traffic` helper. Turning it on installs mitmproxy, makes its
- * certificate, and asks the user to trust it (for HTTPS) and for Android's VPN consent ([TrafficFlow]).
- * From then on `traffic start` and `traffic stop`, Claude's or the shell's, run captures.
+ * sandbox ([TrafficVpn]), read by the `traffic` helper. Its checklist installs mitmproxy, makes its
+ * certificate, and asks the user to trust it (for HTTPS) and for Android's VPN consent. From then on
+ * `traffic start` and `traffic stop`, Claude's or the shell's, run captures.
  */
 object NetworkMonitor : Module {
     override val id = "traffic"
     override val title = "Network Monitor"
     override val blurb = "see what apps on the phone send and receive over the network"
     override val components = listOf(TrafficVpn::class.java)
-    override val download = "about 50 MB (mitmproxy)"
     override val requests = setOf("traffic-request")
 
     private val PACKAGE = Regex("[A-Za-z]\\w*(\\.[A-Za-z_]\\w*)+")
+    /** Its startActivityForResult code for Android's VPN consent (modules' codes are 100+). */
+    private const val VPN = 100
 
-    override fun nextStep(ctx: Context) = "Claude captures traffic with traffic start and traffic stop (so can you, in " +
-        "the Shell). While a capture runs, Android shows a key icon and calls and other UDP traffic don't get through."
+    override val summary = "Claude captures traffic with traffic start and traffic stop (so can you, in the " +
+        "Shell). HTTPS is readable only from apps that accept certificates you add, like Chrome and apps you build. " +
+        "Most apps refuse it: their first connection fails, then Cinder Lite lets that host through unread, so you " +
+        "see only which hosts they reach. While a capture runs, Android shows a key icon and calls and other UDP " +
+        "traffic don't get through."
 
-    override fun isInstalled(sandbox: Sandbox) = TrafficFlow.hasMitmproxy(sandbox) && TrafficFlow.caCert(sandbox).exists()
+    override fun steps(ctx: Context, sandbox: Sandbox) = listOf(
+        Step.work("Install mitmproxy", "About 50 MB, once.", download = true, done = { hasMitmproxy(sandbox) }) {
+            sandbox.run("/sbin/apk add --no-cache mitmproxy", asRoot = true, log = it)
+        },
+        // The certificate mitmproxy would make, but named Cinder Lite, so Settings says whose it is.
+        Step.work("Make Cinder Lite's certificate", done = { caCert(sandbox).exists() }) {
+            sandbox.run("python3 -c 'import pathlib; from mitmproxy.certs import CertStore; CertStore.create_store(" +
+                "pathlib.Path(\"/root/.mitmproxy\"), \"mitmproxy\", 2048, \"Cinder Lite\", \"Cinder Lite\")'", log = it)
+        },
+        // Since Android 11 no app can install a certificate or open that screen: it waits in Downloads.
+        Step.ask("Trust the certificate, to read HTTPS", "Open Settings", "In Settings, search for \"CA certificate\", " +
+            "tap it, then Install anyway, and pick \"${TrafficVpn.CERT_NAME}\" in Downloads. Android asks for a screen " +
+            "lock first if the phone has none. Only apps that accept certificates you add (Chrome, apps you build) can " +
+            "be read; for the rest you see which hosts they reach. Remove it when you're done: Settings → Trusted " +
+            "credentials → User.", optional = true, done = { TrafficVpn.trusted(caCert(sandbox)) }) {
+            TrafficVpn.saveToDownloads(it, caCert(sandbox))
+            runCatching { it.startActivity(Intent("com.android.settings.action.SETTINGS_SEARCH")) }
+                .recoverCatching { _ -> it.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) }
+        },
+        Step.ask("Allow the VPN", "Allow", "Android asks once. Captures then start without asking.",
+            done = { VpnService.prepare(ctx) == null }) { activity ->
+            @Suppress("DEPRECATION")
+            VpnService.prepare(activity)?.let { activity.startActivityForResult(it, VPN) }
+        },
+    )
 
-    override fun install(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {
-        if (!TrafficFlow.hasMitmproxy(sandbox)) TrafficFlow.installMitmproxy(sandbox, log)
-        log("making Cinder Lite's certificate…")
-        TrafficFlow.ensureCa(sandbox, log)
-    }
+    private fun hasMitmproxy(sandbox: Sandbox) = "P:mitmproxy" in sandbox.installedPackages
 
-    override fun turnedOn(activity: Activity) = TrafficFlow.turnOn(activity)
+    /** The certificate mitmproxy signs with: made once, kept with its key in /root/.mitmproxy. */
+    fun caCert(sandbox: Sandbox) = File(sandbox.home, ".mitmproxy/mitmproxy-ca-cert.pem")
 
     override fun downloads(sandbox: Sandbox) =
-        if (TrafficFlow.hasMitmproxy(sandbox) || File(sandbox.home, ".mitmproxy").exists())
+        if (hasMitmproxy(sandbox) || File(sandbox.home, ".mitmproxy").exists())
             "mitmproxy (about 50 MB), its certificate and what it captured" else null
 
     override fun deleteDownloads(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {
-        if (TrafficFlow.hasMitmproxy(sandbox)) sandbox.run("/sbin/apk del mitmproxy", asRoot = true, log = log)
+        if (hasMitmproxy(sandbox)) sandbox.run("/sbin/apk del mitmproxy", asRoot = true, log = log)
         sandbox.deleteTree(File(sandbox.home, ".mitmproxy"))
         sandbox.deleteTree(File(sandbox.tmp, "cinder-traffic"))
         log("If you trusted Cinder Lite's certificate, remove it too: Settings → search Trusted credentials → " +
@@ -51,14 +78,6 @@ object NetworkMonitor : Module {
     override fun start(ctx: Context) = TrafficVpn.forgetStale(ctx)
 
     override fun stop(ctx: Context) = TrafficVpn.stop(ctx)
-
-    override fun onResume(activity: Activity) = TrafficFlow.resume(activity)
-
-    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int): Boolean {
-        if (requestCode != TrafficFlow.VPN) return false
-        TrafficFlow.consented(activity, resultCode == Activity.RESULT_OK)
-        return true
-    }
 
     /**
      * `traffic start [app…]` and `traffic stop`. Turning the module on was the user's say-so, so a

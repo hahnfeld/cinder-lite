@@ -227,17 +227,24 @@ on in ⋮ → **Modules**:
 A module that's off isn't there for Claude: its commands aren't in the sandbox, Claude's brief
 doesn't mention it (only that it exists and where to turn it on), and its parts of the app are
 switched off in Android too, so its accessibility service doesn't show in Settings and its VPN
-can't start. Turning one on downloads what it needs, the first time only, then offers to restart
-Claude so it learns about it. Turning one off asks whether to delete those downloads too. If its
-downloads go missing (⋮ → Reinstall sandbox deletes them), Cinder Lite turns it off at the next start
-and says so; turning it on again downloads them again.
+can't start.
+
+Turning one on shows its checklist: what Cinder Lite installs, and what only you can grant, one row
+each, ticked as it's done. A row that's yours has its button (Open Settings, Allow…), and the list
+looks again when you come back to the app. Every row is checked against what's really on the phone,
+so a list that was interrupted or failed (✗, with Retry) picks up at its first unticked row, and
+turning a module on again just ticks what's already there. The module's checkbox in ⋮ → Modules is
+checked once its list is done; until then, tapping it brings the list back. **Restart Claude** lets
+Claude learn about it. Turning one off asks whether to delete its downloads too. If they go missing
+(⋮ → Reinstall sandbox deletes them), Cinder Lite turns it off at the next start and says so.
 
 ### Phone Use
 
 adb-shell access for the sandbox through Shizuku, and a phone screen Claude operates apps on.
-Nothing to download: its helpers run on the base Python. Its checkbox is the only switch: turning
-it on asks for Shizuku's permission and for the phone screen's accessibility service, and turning
-it off ends both, so the sandbox loses adb-shell power and the service leaves Settings.
+Nothing to download: its helpers run on the base Python. Its checkbox is the only switch: its
+checklist takes you through installing and starting Shizuku, Shizuku's permission and the phone
+screen's accessibility service, and turning it off ends both, so the sandbox loses adb-shell power
+and the service leaves Settings.
 
 Inside the sandbox, Claude and the shell run as Cinder Lite's own app user, which Android gives very
 few rights. So the Android system tools don't work there: `pm` for packages, `am` for activities,
@@ -281,11 +288,13 @@ They don't allow reading other apps' private data or changing the system partiti
 
 #### Setting it up
 
-1. Install Shizuku from [Google Play](https://play.google.com/store/apps/details?id=moe.shizuku.privileged.api)
-   or [GitHub](https://github.com/RikkaApps/Shizuku/releases). Start it via Wireless debugging, as
-   its app walks you through.
-2. In Cinder Lite: ⋮ → **Modules** → **Phone Use**, and allow Cinder Lite in Shizuku's permission
-   dialog. If Shizuku wasn't running yet, Cinder Lite says so; start it and come back.
+1. In Cinder Lite: ⋮ → **Modules** → **Phone Use**. Its checklist:
+   - **Install Shizuku**: opens Shizuku's [download page](https://shizuku.rikka.app/download/)
+     (Google Play, GitHub and others).
+   - **Start Shizuku**: opens it; start it via Wireless debugging, as its app walks you through.
+   - **Allow Cinder Lite in Shizuku**: Shizuku's own permission prompt.
+   - **Turn on phone screen access**: the accessibility service, below.
+2. Rows that are already done are ticked, so with Shizuku running you only see what's left.
 3. In the sandbox:
 
    ```sh
@@ -404,8 +413,8 @@ enter, tab, del, space, letters and digits.
 
 `phone ui` reads the screen through Android's accessibility API, the same way a screen reader does,
 so Claude works from real buttons and text fields rather than guessing from pictures. For that, turn
-on **Cinder Lite phone screen** in Settings → Accessibility once. Cinder Lite offers to take you there
-when you turn Phone Use on, and if Claude tries the phone screen without it, a message on the phone
+on **Cinder Lite phone screen** in Settings → Accessibility once. Phone Use's checklist takes you there
+when you turn it on, and if Claude tries the phone screen without it, a message on the phone
 says what to turn on (on a sideloaded install Android may first call it a restricted setting: App
 info → ⋮ → Allow restricted settings). Until then Claude can still use `phone shot` and
 coordinates. The service only reads the phone screen, and only when a `phone` command asks.
@@ -462,23 +471,24 @@ Its checkbox gets it ready; captures then run from `traffic start` to `traffic s
 uses when you ask it about network traffic (and you can, in the Shell). Ask Claude things like "what does
 this app send when I tap Sync?" or "why does this page load slowly?".
 
-**Turning it on.** ⋮ → **Modules** → **Network Monitor** installs
-[mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`, about 50 MB and a minute) and
-makes a certificate for it, named *Cinder Lite*. Then it asks for the two things only you can
-grant:
+**Turning it on.** ⋮ → **Modules** → **Network Monitor** shows its checklist:
 
-1. To read HTTPS, Android needs you to trust that certificate. Since Android 11 no app can do this
-   for you, or even open the screen for it, so Cinder Lite saves *Cinder Lite certificate.crt* to
+1. **Install mitmproxy**: [mitmproxy](https://mitmproxy.org) in the sandbox (`apk add mitmproxy`,
+   about 50 MB and a minute), once you tap **Download**.
+2. **Make Cinder Lite's certificate**: mitmproxy's, named *Cinder Lite*.
+3. **Trust the certificate, to read HTTPS** (optional). Since Android 11 no app can do this for you,
+   or even open the screen for it, so **Open Settings** saves *Cinder Lite certificate.crt* to
    Downloads and opens Settings: search for **CA certificate**, tap **Install anyway**, and pick the
-   file. Android asks you to set a screen lock first if there isn't one. Back in Cinder Lite it
-   notices the certificate and carries on. **Without HTTPS** skips this: you then see which hosts
-   apps connect to, but not what they send; trusting it later makes HTTPS readable from the next
-   capture on.
-2. Android asks once whether Cinder Lite may set up a VPN. Saying no (or Cancel on the certificate)
-   leaves Network Monitor off.
+   file. Android asks you to set a screen lock first if there isn't one. Back in Cinder Lite the row
+   is ticked. **Skip** goes without: you then see which hosts apps connect to, but not what they
+   send; trusting it later makes HTTPS readable from the next capture on.
+4. **Allow the VPN**: Android asks once whether Cinder Lite may set up a VPN.
 
-Then it's ready. While a capture runs, Android shows a key icon in the status bar and Cinder Lite a
-notification with **Stop**. That **Stop**, ⋮ → **Stop**, disconnecting the VPN in Settings or turning
+Then it's ready; until the VPN is allowed, Network Monitor stays unchecked in ⋮ → Modules, and
+tapping it brings the list back.
+
+While a capture runs, Android shows a key icon in the status bar and Cinder Lite a notification with
+**Stop**. That **Stop**, ⋮ → **Stop**, disconnecting the VPN in Settings or turning
 Network Monitor off also ends it.
 
 **What it can read.** HTTPS is readable only from apps that accept certificates you add: Chrome,
@@ -524,8 +534,8 @@ down with it, so the phone is never left offline; if the app is killed, Android 
 ### App Development
 
 Building Android apps on the phone, and taking APKs apart. Turning it on (⋮ → **Modules** → **App
-Development**) installs it all in one go, about 450 MB of tools plus a ~260 MB copy of the device's
-own libraries, so allow a few minutes on wifi:
+Development**, then **Download**) installs it in three rows of its checklist, about 450 MB of tools
+plus a ~260 MB copy of the device's own libraries, so allow a few minutes on wifi:
 
 - **The build pipeline** (`android-sdk-install`): Alpine's OpenJDK 17 (`javac`, `keytool`),
   Termux's aarch64 `aapt2`, the `d8` and `apksigner` jars, and Google's `android.jar`, for
@@ -602,10 +612,12 @@ off, and the app runs `claude update` once a day instead, as a sandbox process o
 after Claude starts. `claude update` in
 the shell checks right away; ⋮ → Reinstall sandbox installs the latest release from scratch.
 
-**First run:** allow storage access. The app unpacks the sandbox, then says that Claude Code is
-Anthropic's software under its own license and asks before getting it: tap **Download Claude Code**.
-It then downloads Claude Code (~240 MB from npm, wifi recommended) and installs bash, git, Python,
-Node.js and friends. Claude Code then starts; type `/login`.
+**First run:** allow storage access, and notifications if you want Claude's alerts. Setup is a
+checklist: **Unpack Alpine Linux**; **Download and install Claude Code**, which says that Claude Code
+is Anthropic's software under its own license and waits for you to tap **Download**
+(~240 MB from npm, wifi recommended); and **Install the base tools** (bash, git, Python, Node.js and
+friends). If it's interrupted or fails, it picks up at the first unticked row. Claude Code then
+starts; type `/login`.
 
 **Installing on Android 16–17.** Android 17 still installs apps targeting API 24+, so targetSdk 28 is
 fine, and the app has been tested on Android 17 (API 37). Two platform policies affect sideloading it,

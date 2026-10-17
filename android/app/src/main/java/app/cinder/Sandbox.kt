@@ -425,8 +425,11 @@ class Sandbox(private val ctx: Context) {
 
     private val bootstrapStamp get() = File(root, ".bootstrap-v1")
 
+    /** Whether the bundled Alpine rootfs has been unpacked ([bootstrap]). */
+    val isUnpacked get() = bootstrapStamp.exists()
+
     /** Everything Claude Code needs before it can start: runtime, Claude Code itself, base tools. */
-    val ready get() = bootstrapStamp.exists() && hasClaude && hasBaseTools
+    val ready get() = isUnpacked && hasClaude && hasBaseTools
 
     /**
      * Unpacks the Alpine rootfs that ships inside the APK, once. (proot, its pieces and the helpers

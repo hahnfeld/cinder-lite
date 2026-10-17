@@ -1,11 +1,16 @@
 #!/bin/sh
 # The Claude tab: set up on first run, then Claude Code with Cinder Lite's brief and hooks.
-# A failed setup leaves its error on screen and tries again on Enter.
+# A failed setup leaves its error on screen and in setup-error, where the app's checklist shows it
+# (✗ and Retry), and tries again on Enter, which Retry sends.
+dl=/usr/local/dl
+rm -f $dl/setup-error
 until sh /usr/local/libexec/cinder-setup; do
   echo
-  echo "Setup didn't finish. Check the connection and free space, then press Enter to try again"
-  echo "(⋮ → Reinstall sandbox starts over)."
+  echo "Setup didn't finish. Check the connection and free space, then Retry (or press Enter);"
+  echo "⋮ → Reinstall sandbox starts over."
+  { cat $dl/error 2>/dev/null || echo "Setup didn't finish. Check the connection and free space; Details shows what happened."; } > $dl/setup-error
   read -r _
+  rm -f $dl/setup-error
 done
 cd /workspace
 # This session started before setup installed bash; Claude Code's Bash tool should get it anyway.

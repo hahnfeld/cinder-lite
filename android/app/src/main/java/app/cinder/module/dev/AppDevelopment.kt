@@ -2,13 +2,14 @@ package app.cinder.module.dev
 
 import android.content.Context
 import app.cinder.Sandbox
+import app.cinder.Step
 import app.cinder.module.Module
 import java.io.File
 import kotlin.concurrent.thread
 
 /**
- * App Development: building Android apps and taking them apart, on the phone. Turning it on puts
- * the whole toolchain down at once: the device's Android libraries (so Termux's bionic tools run in
+ * App Development: building Android apps and taking them apart, on the phone. Its checklist puts
+ * the whole toolchain down: the device's Android libraries (so Termux's bionic tools run in
  * here, see android-bootstrap), Alpine's JDK, Termux's aapt2, d8 and apksigner, Google's android.jar
  * (android-sdk-install), and apktool and jadx (apk-tools-install). The helpers still install
  * whatever has gone missing when they're run.
@@ -17,12 +18,11 @@ object AppDevelopment : Module {
     override val id = "dev"
     override val title = "App Development"
     override val blurb = "build Android apps and take them apart, with a JDK, aapt2, d8, apksigner, apktool and jadx"
-    override val download = DOWNLOAD
     override val requests = setOf("stage-request")
 
     // Measured on the Android 15 emulator: the JDK 262 MB, Termux's tools 57, android.jar 26, jadx 75,
     // apktool 15; the device's libraries 259.
-    private const val DOWNLOAD = "about 450 MB of tools and copies in the phone's own Android libraries (about 260 MB)"
+    private const val DOWNLOAD = "About 450 MB of tools in all, once. It takes a while; keep Cinder Lite open."
     private const val TERMUX = "/data/data/com.termux/files/usr"
 
     // Termux's tools go after Alpine's own dirs, never before. Termux ships bionic coreutils (sort,
@@ -53,26 +53,32 @@ object AppDevelopment : Module {
     /** Set once [stageFullRuntime] has copied every bionic library (Termux's tools need them all). */
     private fun fullRuntimeMarker(sandbox: Sandbox) = File(sandbox.androidLib64, ".full")
 
-    /** What the install puts down, by the file each piece is known by. */
-    private fun pieces(sandbox: Sandbox) = listOf(
-        fullRuntimeMarker(sandbox),
+    /** What android-sdk-install puts down, by the file each piece is known by. */
+    private fun sdk(sandbox: Sandbox) = listOf(
         File(sandbox.rootfs, "usr/lib/jvm/default-jvm/bin/javac"),
         File(sandbox.rootfs, "$TERMUX/bin/aapt2".removePrefix("/")),
         File(sandbox.rootfs, "$TERMUX/bin/d8".removePrefix("/")),
         File(sandbox.rootfs, "$TERMUX/bin/apksigner".removePrefix("/")),
         File(sandbox.home, "android-sdk/platforms/android-35/android.jar"),
+    )
+
+    /** What apk-tools-install puts down. */
+    private fun apkTools(sandbox: Sandbox) = listOf(
         File(sandbox.rootfs, "usr/local/lib/apktool.jar"),
         File(sandbox.rootfs, "usr/local/jadx/bin/jadx"),
     )
 
-    override fun isInstalled(sandbox: Sandbox) = pieces(sandbox).all { it.exists() }
+    private fun pieces(sandbox: Sandbox) = listOf(fullRuntimeMarker(sandbox)) + sdk(sandbox) + apkTools(sandbox)
 
-    override fun install(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {
-        log("copying the phone's Android libraries into the sandbox (about 260 MB)…")
-        stageFullRuntime(sandbox)
-        val status = sandbox.run("android-sdk-install && apk-tools-install", log = log)
-        check(status == 0 && isInstalled(sandbox)) { "the toolchain didn't install completely (see above)" }
-    }
+    override fun steps(ctx: Context, sandbox: Sandbox) = listOf(
+        Step.work("Copy the phone's Android libraries", "About 260 MB, copied from the phone itself: Termux's tools need them.",
+            done = { fullRuntimeMarker(sandbox).exists() }) { stageFullRuntime(sandbox) },
+        Step.work("Install the JDK, aapt2, d8, apksigner and android.jar", DOWNLOAD, download = true,
+            done = { sdk(sandbox).all { it.exists() } }) { sandbox.run("android-sdk-install", log = it) },
+        Step.work("Install apktool and jadx", DOWNLOAD, download = true, done = { apkTools(sandbox).all { it.exists() } }) {
+            sandbox.run("apk-tools-install", log = it)
+        },
+    )
 
     /**
      * Copies the device's whole bionic library set into the sandbox (the base copies only what nested

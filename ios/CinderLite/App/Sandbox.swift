@@ -37,7 +37,7 @@ final class Sandbox {
     var isBootstrapped: Bool { FileManager.default.fileExists(atPath: stamp.path) }
 
     /// The guest's files are real files under root/data (fakefs keeps only their metadata apart).
-    private func guestFile(_ path: String) -> URL { root.appendingPathComponent("data" + path) }
+    func guestFile(_ path: String) -> URL { root.appendingPathComponent("data" + path) }
 
     var shell: String { FileManager.default.fileExists(atPath: guestFile("/bin/bash").path) ? "/bin/bash" : "/bin/sh" }
 
@@ -105,7 +105,7 @@ final class Sandbox {
         }
         try? fm.removeItem(at: stamp)
         try? fm.removeItem(at: root)
-        for name in ["claude-installer", "progress", "error", "request"] {
+        for name in ["claude-installer", "progress", "error", "setup-error", "request"] {
             try? fm.removeItem(at: downloads.appendingPathComponent(name))
         }
         UserDefaults.standard.removeObject(forKey: Self.resetKey)

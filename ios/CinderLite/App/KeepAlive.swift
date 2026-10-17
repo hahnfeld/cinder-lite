@@ -27,6 +27,13 @@ final class KeepAlive: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// On, with notifications asked for too (Claude's alerts are how the user hears from it in the
+    /// background): ⋮ → Keep running in background, and Phone Use's checklist.
+    func turnOn() {
+        enabled = true
+        Notifier.shared.requestPermission()
+    }
+
     /// Whether iOS refused location to Cinder Lite (Settings → Cinder Lite → Location to change it).
     var denied: Bool { [.denied, .restricted].contains(manager.authorizationStatus) }
 

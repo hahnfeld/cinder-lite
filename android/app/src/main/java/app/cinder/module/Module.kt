@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import app.cinder.Sandbox
+import app.cinder.Step
 import app.cinder.prefs
 import app.cinder.module.dev.AppDevelopment
 import app.cinder.module.phone.PhoneUse
@@ -53,32 +54,24 @@ interface Module {
 
     // ---- turning it on and off (MainActivity's ⋮ → Modules) ----
 
-    /** About how much its first turn-on downloads, for the confirm dialog; null if it's nothing much. */
-    val download: String? get() = null
-
-    /** Whether everything [install] puts down is there; turning it on installs only when it isn't. */
-    fun isInstalled(sandbox: Sandbox): Boolean = true
-
     /**
-     * Gets it ready, the first time it's turned on (it's on already, so its helpers are in place).
-     * Off the main thread; logs to the setup pane; throws if it couldn't, and the module goes back off.
+     * What turning it on involves, as the rows of its checklist ([Checklist]): what the app installs
+     * (it's on already by then, so its helpers are in place) and what only the user can grant. Asked
+     * each time it's turned on, so a row that's already done is simply ticked.
      */
-    fun install(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {}
+    fun steps(ctx: Context, sandbox: Sandbox): List<Step>
+
+    /** How to use it, shown once its checklist is done; null if there's nothing to say. */
+    val summary: String? get() = null
+
+    /** Whether its checklist has nothing left but optional rows. */
+    fun isReady(ctx: Context, sandbox: Sandbox) = steps(ctx, sandbox).all { it.optional || it.done() }
 
     /** Says what turning it off can also delete, and about how much; null if nothing. */
     fun downloads(sandbox: Sandbox): String? = null
 
     /** Deletes what [downloads] describes. Off the main thread. */
     fun deleteDownloads(ctx: Context, sandbox: Sandbox, log: (String) -> Unit) {}
-
-    /** What the user still has to do outside Cinder Lite once it's on, for the "it's on" dialog; null if nothing. */
-    fun nextStep(ctx: Context): String? = null
-
-    /**
-     * It's just been turned on (and installed): asks the user for whatever Android needs their say-so
-     * for (permissions, consents), so everything it does works from now on. After the "it's on" dialog.
-     */
-    fun turnedOn(activity: Activity) {}
 
     /** Ends what it's running and any switch of its own (Shizuku): it's being turned off. */
     fun turnedOff(ctx: Context) = stop(ctx)
@@ -90,11 +83,6 @@ interface Module {
 
     /** ⋮ → Stop: end anything it's running. Asked of every module, on or off. */
     fun stop(ctx: Context) {}
-
-    fun onResume(activity: Activity) {}
-
-    /** Its own startActivityForResult answers; true if [requestCode] was one of its. Codes 100+ are modules'. */
-    fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int): Boolean = false
 }
 
 /** The modules, which are on, and switching them. */

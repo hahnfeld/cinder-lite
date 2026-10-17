@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -74,7 +75,17 @@ object ShizukuBridge {
 
     fun isRunning() = Shizuku.pingBinder()
 
+    /** Shizuku's app, or its download page if it isn't installed. */
+    fun open(ctx: Context) {
+        val intent = ctx.packageManager.getLaunchIntentForPackage(ShizukuProvider.MANAGER_APPLICATION_ID)
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/download/"))
+        runCatching { ctx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    }
+
     fun hasPermission() = isRunning() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+
+    /** Whether Shizuku will still show its permission dialog (not after "Deny and don't ask again"). */
+    fun askable() = runCatching { !Shizuku.shouldShowRequestPermissionRationale() }.getOrDefault(false)
 
     /** Shows Shizuku's own permission dialog; [onResult] gets whether it was granted. Returns its listener. */
     fun requestPermission(onResult: (Boolean) -> Unit): Shizuku.OnRequestPermissionResultListener {

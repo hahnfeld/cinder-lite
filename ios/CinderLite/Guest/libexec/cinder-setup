@@ -1,6 +1,8 @@
 #!/bin/sh
-# First-run setup, shown in the Claude tab: Alpine's base tools, then Claude Code, which Cinder Lite
-# downloads and checks (sha512) on the iOS side and hands over in /usr/local/dl. Safe to re-run.
+# First-run setup, in the Claude tab under the app's setup checklist, in its order (and Android's):
+# Claude Code, which Cinder Lite downloads and checks (sha512) on the iOS side once the user taps
+# Download there and hands over in /usr/local/dl, then Alpine's base tools. Safe to re-run: the
+# checklist ticks off what's done.
 set -e
 dl=/usr/local/dl
 mkdir -p /workspace
@@ -15,43 +17,9 @@ m=https://dl-cdn.alpinelinux.org/alpine
 printf '%s\n' "$m/v$release/main" "$m/v$release/community" "@edge $m/edge/main" "@edge $m/edge/community" \
   "@testing $m/edge/testing" > /etc/apk/repositories
 
-# Claude Code isn't Cinder Lite's to hand out: it's Anthropic's, under its own license. So its
-# download is the user's call, made by pressing Enter, never automatic. The Android app says the same.
-# Asked once per download: a retry after a failure elsewhere (apk) doesn't ask again while the
-# agreed download is under way or done.
-if [ ! -L /root/.local/bin/claude ] && [ ! -f $dl/claude-installer ] && { [ ! -f $dl/progress ] || [ -f $dl/error ]; }; then
-  # The terminal gets its real size once it's on screen, which can be just after this starts
-  # (until then it's the default 80 columns): wait for that resize, two seconds at most.
-  if [ "$(stty size 2>/dev/null | cut -d' ' -f2)" = 80 ]; then
-    resized=
-    trap 'resized=1' WINCH
-    i=0
-    while [ -z "$resized" ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
-    trap - WINCH
-  fi
-  cols=$(stty size 2>/dev/null | cut -d' ' -f2)
-  [ "${cols:-0}" -ge 20 ] 2>/dev/null || cols=60
-  fold -s -w "$cols" <<'EOF'
-
-Cinder Lite runs Claude Code, but doesn't include it. Claude Code is Anthropic's software, distributed separately under its own license (© Anthropic PBC, all rights reserved). Its use is subject to Anthropic's legal agreements:
-https://code.claude.com/docs/en/legal-and-compliance
-
-Press Enter to get the latest version from npm (about 240 MB) and install it here. By downloading it, you accept Anthropic's terms for it.
-EOF
-  read -r _
-  # The app watches for this file and starts the download; base tools install meanwhile.
-  rm -f $dl/error $dl/progress
-  : > $dl/request
-fi
-
-base="bash coreutils findutils grep sed git ripgrep less curl python3 py3-pip nodejs npm openssh-client make patch zip jq tzdata"
-if ! apk info -e bash python3 nodejs tzdata >/dev/null 2>&1; then
-  echo "Installing the base tools (this runs in an emulator: a few minutes)…"
-  apk add --no-cache $base
-fi
-
 if [ ! -L /root/.local/bin/claude ]; then
   last=""
+  [ -f $dl/claude-installer ] || echo "Waiting for Claude Code's download (the checklist asks for it)…"
   until [ -f $dl/claude-installer ]; do
     if [ -f $dl/error ]; then echo; cat $dl/error; exit 1; fi
     now=$(cat $dl/progress 2>/dev/null || true)
@@ -63,4 +31,10 @@ if [ ! -L /root/.local/bin/claude ]; then
   chmod +x $dl/claude-installer
   $dl/claude-installer install latest
   rm -f $dl/claude-installer $dl/progress
+fi
+
+base="bash coreutils findutils grep sed git ripgrep less curl python3 py3-pip nodejs npm openssh-client make patch zip jq tzdata"
+if ! apk info -e bash python3 nodejs tzdata >/dev/null 2>&1; then
+  echo "Installing the base tools (this runs in an emulator: a few minutes)…"
+  apk add --no-cache $base
 fi

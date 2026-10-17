@@ -5,7 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -416,9 +415,5 @@ class PhoneAccessibility : AccessibilityService() {
                 ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
         }
-
-        /** App info, where Android 13+ hides "Allow restricted settings" for sideloaded apps. */
-        fun openAppInfo(ctx: Context) = ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-            Uri.fromParts("package", ctx.packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }

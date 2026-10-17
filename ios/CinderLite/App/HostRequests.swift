@@ -147,7 +147,7 @@ final class Notifier {
     }
 }
 
-/// Installs the latest Claude Code, when cinder-setup asks (after the user agreed to it; see there).
+/// Installs the latest Claude Code, when setup's checklist asks (the user tapped Download).
 /// The official linux-arm64-musl build of npm's current release is downloaded, what `npm install`
 /// would fetch on a laptop, and checked against the sha512 npm publishes for it. Its `claude` is
 /// handed to the guest as /usr/local/dl/claude-installer, whose own `claude install` sets up the

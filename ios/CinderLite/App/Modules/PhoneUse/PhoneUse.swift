@@ -18,36 +18,55 @@ final class PhoneUse: CinderModule {
     private var observer: NSObjectProtocol?
     private var flag: URL { Sandbox.shared.requests.appendingPathComponent("keep-alive") }
 
-    /// `phone` needs Cinder Lite awake while Claude works another app.
-    func turnedOn(_ controller: TerminalController) {
-        if !KeepAlive.shared.enabled { controller.setKeepAlive(true) }
+    /// Keep running in background (`phone` needs Cinder Lite awake while Claude works another app),
+    /// iCTRL, and its runner: what only the user can do. `phone setup` says the same in the sandbox.
+    func steps() -> [Step] {
+        [
+            Step("Keep running in background", "Claude works other apps while Cinder Lite is in the background. iOS " +
+                 "keeps it awake with location updates (the coarsest kind, never kept or sent anywhere) and shows " +
+                 "the location indicator meanwhile. If location is off for Cinder Lite, this opens Settings.",
+                 .ask("Turn on", {
+                     if KeepAlive.shared.denied, let settings = URL(string: UIApplication.openSettingsURLString) {
+                         UIApplication.shared.open(settings)
+                     } else {
+                         KeepAlive.shared.turnOn()
+                     }
+                 }), done: { KeepAlive.shared.allowed }),
+            Step("Install iCTRL", "Claude uses apps on this iPhone through iCTRL, a separate open-source app that " +
+                 "drives the screen with Apple's UI-testing tools. Setting it up takes a Mac or a sideloading app " +
+                 "with developer tools.",
+                 .ask("Open install guide", { UIApplication.shared.open(Self.readme) }), done: { Self.hasICTRL }),
+            Step("Start iCTRL's runner", "Claude's phone start starts it too. If that fails, start it in the iCTRL " +
+                 "app (after a reboot, iCTRL first mounts its developer disk image again).",
+                 .ask("Open iCTRL", { UIApplication.shared.open(URL(string: "ictrl://")!) }),
+                 optional: true, done: { [weak self] in self?.runnerAnswers() ?? false }),
+        ]
     }
 
-    /// Whether iCTRL is there to use, checked when it's turned on: `phone setup` says the same in the sandbox.
-    func nextStep() -> String? {
-        guard let ictrl = URL(string: "ictrl://"), UIApplication.shared.canOpenURL(ictrl) else {
-            return "Claude uses apps on this iPhone through iCTRL, a separate open-source app that drives the screen " +
-                "with Apple's UI-testing tools. It isn't installed: setting it up takes a Mac or a sideloading app with " +
-                "developer tools (see Cinder Lite's README)."
-        }
-        if runnerAnswers() { return nil }
-        return "iCTRL's runner isn't running. Claude's phone start starts it; if that fails, start it in the iCTRL app " +
-            "(after a reboot, iCTRL first mounts its developer disk image again)."
+    var summary: String? {
+        "Ask Claude to do something on the phone. It runs phone start; the first time, iCTRL asks whether to " +
+        "allow \"Cinder Lite\": tap Allow."
     }
 
-    /// iCTRL's runner listening on 127.0.0.1:8200, as `phone` reaches it. Loopback answers or refuses at
-    /// once, so the wait is short even on the main thread.
+    private static let readme = URL(string: "https://github.com/hahnfeld/cinder-lite/blob/main/ios/README.md#phone-use-claude-uses-apps-on-your-iphone")!
+    private static var hasICTRL: Bool { URL(string: "ictrl://").map(UIApplication.shared.canOpenURL) ?? false }
+
+    /// Whether iCTRL's runner listens on 127.0.0.1:8200, as `phone` reaches it: the last answer, asking
+    /// again in the background (the checklist asks every second, on the main thread).
+    private var runnerUp = false
+    private var asking = false
     private func runnerAnswers() -> Bool {
+        guard !asking else { return runnerUp }
+        asking = true
         var request = URLRequest(url: URL(string: "http://127.0.0.1:8200/whoami")!)
         request.timeoutInterval = 1
-        let done = DispatchSemaphore(value: 0)
-        var answered = false
         URLSession.shared.dataTask(with: request) { _, response, _ in
-            answered = response != nil
-            done.signal()
+            DispatchQueue.main.async {
+                self.runnerUp = response != nil
+                self.asking = false
+            }
         }.resume()
-        _ = done.wait(timeout: .now() + 1.5)
-        return answered
+        return runnerUp
     }
 
     func apply(on: Bool) {

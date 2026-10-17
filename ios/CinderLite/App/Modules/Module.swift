@@ -5,8 +5,8 @@ typealias MenuItem = (title: String, checked: Bool?, run: () -> Void)
 
 /// A part of Cinder Lite that's off until the user turns it on (⋮ → Modules), so the base app stays a
 /// plain Claude Code runner. The same design as the Android app's `app.cinder.module.Module`, with only
-/// the members iOS's modules use so far (Android's also has installs, requests and PATH entries, for
-/// modules iOS doesn't have); iOS has Phone Use only.
+/// the members iOS's modules use so far (Android's also has requests and PATH entries, for modules iOS
+/// doesn't have); iOS has Phone Use only.
 ///
 /// A module is this class plus its sandbox files, `Guest/modules/<id>/`: `bin/` (helpers, on PATH
 /// only while it's on) and `brief.md` (its part of Claude's brief, likewise). The base never names a
@@ -25,12 +25,11 @@ protocol CinderModule: AnyObject {
 
     /// Called at launch and whenever it's turned on or off, to set up or undo its effect on the app.
     func apply(on: Bool)
-    /// What the user still has to do outside Cinder Lite once it's on, for the "it's on" dialog; nil
-    /// if nothing.
-    func nextStep() -> String?
-    /// It's just been turned on: turns on, or asks the user for, whatever else it needs, so everything
-    /// it does works from now on. After the "it's on" dialog.
-    func turnedOn(_ controller: TerminalController)
+    /// What turning it on involves, as the rows of its checklist (`Checklist`): what only the user can
+    /// grant or install. Asked each time it's turned on, so a row that's already done is simply ticked.
+    func steps() -> [Step]
+    /// How to use it, shown once its checklist is done; nil if there's nothing to say.
+    var summary: String? { get }
     /// ⋮ → Stop (asked of every module, on or off), and turning it off: whatever it has running.
     func stop()
 }
@@ -38,8 +37,9 @@ protocol CinderModule: AnyObject {
 extension CinderModule {
     var urlSchemes: [String] { [] }
     func apply(on: Bool) {}
-    func nextStep() -> String? { nil }
-    func turnedOn(_ controller: TerminalController) {}
+    var summary: String? { nil }
+    /// Whether its checklist has nothing left but optional rows: ⋮ → Modules checks it then.
+    var isReady: Bool { steps().allSatisfy { $0.optional || $0.done() } }
     func stop() {}
 }
 

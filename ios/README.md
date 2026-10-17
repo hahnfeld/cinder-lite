@@ -12,7 +12,7 @@ Cinder Lite is by Matt Hahnfeld: https://github.com/hahnfeld/cinder-lite
 
 Cinder Lite is a **front-end**. It does not contain, copy, or reimplement Claude Code. On first run
 it says that Claude Code is Anthropic's software, distributed separately under its own license, and
-waits for you to press Enter. Only then does it download npm's current `linux-arm64-musl` build of
+waits for you to tap **Download**. Only then does it download npm's current `linux-arm64-musl` build of
 Claude Code, the one `npm install` would fetch on a laptop, and check it against the sha512 npm
 publishes. Claude Code's own `claude install` then sets it up, and from then on Cinder Lite runs
 `claude update` once a day, in the background.
@@ -51,15 +51,20 @@ signing tool can't grant them, the app still runs, but large tasks are more like
 
 ## First run
 
-1. Cinder Lite unpacks its Alpine root (a few seconds).
-2. The Claude tab shows the notice about Claude Code's license. **Press Enter** to download it
-   (about 240 MB from npm; Wi-Fi recommended). Close the app instead to leave it for later.
-3. Meanwhile the sandbox installs bash, git, Python, Node.js and friends with `apk`. In the emulator
-   this takes several minutes; keep the app open (or turn on Keep running in background).
-4. Claude Code starts. Type `/login`; the sign-in page opens in Safari.
+Setup is a checklist, the same as on Android, ticked off as it goes (**Details** shows the Claude tab
+underneath, where the work prints what it's doing):
 
-If setup fails (no connection, no space), it says so and tries again on Enter. If iOS closes the app
-mid-download, it asks again the next time it opens. ⋮ → Reinstall sandbox starts over from scratch.
+1. **Unpack Alpine Linux** (a few seconds).
+2. **Download and install Claude Code**: the notice about Claude Code's license, and **Download**
+   (about 240 MB from npm; Wi-Fi recommended). Close the app instead to leave it for later.
+3. **Install the base tools**: bash, git, Python, Node.js and friends, with `apk`. In the emulator
+   this takes several minutes; keep the app open (or turn on Keep running in background).
+
+Then Claude Code starts. Type `/login`; the sign-in page opens in Safari.
+
+Every row is checked against what's in the sandbox, so if setup is interrupted (iOS closed the app)
+it picks up at the first unticked row, and if it fails (no connection, no space) the row shows ✗ and
+**Retry**. ⋮ → Reinstall sandbox starts over from scratch.
 
 ## Using it
 
@@ -116,12 +121,15 @@ apps. It plays the role Shizuku and the accessibility service play on Android.
 Unlike Android, iOS has no second screen to give Claude: **it uses your real screen**, with Cinder
 Lite in the background. So:
 
-1. Install iCTRL as its README describes (sideloaded too, with Developer Mode on), and start its
-   runner in the iCTRL app. After each reboot, iCTRL mounts the developer disk image again before
-   the runner can start.
-2. Turn on ⋮ → Modules → **Phone Use**. That also turns on ⋮ → Keep running in background, which
-   Phone Use needs: Claude is in the background while it works. If iCTRL isn't installed, or its
-   runner isn't running, the "Phone Use is on" message says so.
+1. Turn on ⋮ → Modules → **Phone Use**. Its checklist, as on Android:
+   - **Keep running in background**: **Turn on** (⋮ → Keep running in background, which Phone Use
+     needs: Claude is in the background while it works; iOS asks to allow location).
+   - **Install iCTRL**: **Open install guide**. Install iCTRL as its README describes (sideloaded too,
+     with Developer Mode on).
+   - **Start iCTRL's runner** (optional; Claude's `phone start` starts it too). After each reboot,
+     iCTRL mounts the developer disk image again before the runner can start.
+2. Rows that are already done are ticked. ⋮ → Modules shows Phone Use checked once its list is done;
+   until then, tapping it brings the list back.
 3. Ask Claude to do something on the phone. It runs `phone start`; the first time, iCTRL asks
    whether to allow "Cinder Lite": tap **Allow** within about a minute (once; again only if iCTRL
    forgets the key, after 30 days unused or a reinstall). Then Claude opens apps and works through

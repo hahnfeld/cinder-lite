@@ -35,6 +35,11 @@ final class TerminalController: UIViewController {
 
     private let terminalView = TerminalView()
     private let status = UILabel()
+    /// The checklist on screen over the terminal, if any: setup's, or a module's being turned on.
+    private var checklist: Checklist?
+    private let checklistView = ChecklistView()
+    private var checklistTimer: Timer?
+    private var fullChecklist: NSLayoutConstraint!
     private var keys: KeysBar!
     private var sessions: [Tab: Session] = [:]
     private var shown = Tab.claude
@@ -73,6 +78,20 @@ final class TerminalController: UIViewController {
             status.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             status.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
         ])
+        checklistView.translatesAutoresizingMaskIntoConstraints = false
+        checklistView.isHidden = true
+        checklistView.onDetails = { [weak self] in self?.toggleDetails() }
+        checklistView.onTap = { [weak self] in self?.refresh() }
+        view.addSubview(checklistView)
+        // Over the whole screen; with Details open, only as tall as it needs, the terminal below.
+        fullChecklist = checklistView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
+        NSLayoutConstraint.activate([
+            checklistView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            checklistView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            checklistView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            checklistView.bottomAnchor.constraint(lessThanOrEqualTo: view.keyboardLayoutGuide.topAnchor),
+            fullChecklist,
+        ])
         CinderKernel.sessionExited = { [weak self] pid, status in self?.exited(pid: pid, status: status) }
         start()
     }
@@ -84,6 +103,7 @@ final class TerminalController: UIViewController {
 
     /// At launch, and on every return to the app.
     func showKeyboard() {
+        if checklist != nil && !checklistView.showDetails { terminalView.resignFirstResponder(); return }
         if terminalView.terminal != nil && presentedViewController == nil { terminalView.becomeFirstResponder() }
     }
 
@@ -91,9 +111,10 @@ final class TerminalController: UIViewController {
 
     /// Unpacks the sandbox (first launch only), boots it, and starts Claude. Claude Code's own
     /// setup (base tools, and Claude Code once the user agrees to its download) runs in the Claude
-    /// tab, from cinder-claude.
+    /// tab, from cinder-claude, while setup's checklist shows how far it's got.
     private func start() {
-        status.text = Sandbox.shared.isBootstrapped ? nil : "Unpacking Alpine…"
+        let setup = setupChecklist()
+        if !setup.look().complete { open(setup) }
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try Sandbox.shared.bootstrap()
@@ -101,7 +122,6 @@ final class TerminalController: UIViewController {
                     do {
                         try Sandbox.shared.boot()
                         self.booted = true
-                        self.status.text = nil
                         Modules.start()
                         Notifier.shared.start()
                         FileOpener.shared.start(presenter: self)
@@ -121,8 +141,106 @@ final class TerminalController: UIViewController {
     }
 
     private func failed(_ error: Error) {
+        close()   // the error shows instead
         status.text = "Couldn't start the sandbox: \(error.localizedDescription)\n\nCheck the free space, then ⋮ → Reinstall sandbox."
     }
+
+    // MARK: Checklists
+
+    /// First-run setup, the same rows as Android's: the app unpacks Alpine and downloads Claude Code
+    /// (once the user taps Download); cinder-setup, in the Claude tab, installs it and then the base
+    /// tools. Each row is checked against the guest's own files (fakefs keeps them as real files under
+    /// root/data).
+    private func setupChecklist() -> Checklist {
+        let sandbox = Sandbox.shared, fm = FileManager.default
+        func file(_ name: String) -> URL { sandbox.downloads.appendingPathComponent(name) }
+        func read(_ name: String) -> String? {
+            (try? String(contentsOf: file(name), encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let request = { _ = fm.createFile(atPath: file("request").path, contents: nil) }
+        let installed = { (try? String(contentsOf: sandbox.guestFile("/lib/apk/db/installed"), encoding: .utf8)) ?? "" }
+
+        let claudeCode = Step("Download and install Claude Code", Self.claudeNotice, .download(request),
+                              done: { (try? fm.attributesOfItem(atPath: sandbox.guestFile("/root/.local/bin/claude").path)) != nil })
+        claudeCode.progress = { fm.fileExists(atPath: file("claude-installer").path) ? "Installing…" : read("progress") }
+        let base = Step("Install the base tools", "bash, Python, Node.js, git and the usual command-line tools. In the " +
+                        "emulator this takes several minutes; keep Cinder Lite open.", done: {
+            let db = installed()
+            return ["bash", "python3", "nodejs", "tzdata"].allSatisfy { db.contains("\nP:\($0)\n") }
+        })
+        let list = Checklist("Setting up Cinder Lite", [Step("Unpack Alpine Linux", done: { sandbox.isBootstrapped }), claudeCode, base])
+        // cinder-claude reports a failure in setup-error and waits for Enter; a Claude tab that's gone
+        // (⋮ → Stop) has stopped setup too. What happened is in the Claude tab (Details).
+        list.failure = { [weak self] in
+            read("setup-error") ?? (self?.booted == true && self?.sessions[.claude]?.running != true ? "Setup stopped." : nil)
+        }
+        list.retry = { [weak self] in
+            guard let self else { return }
+            for name in ["error", "setup-error"] { try? fm.removeItem(at: file(name)) }
+            if !claudeCode.done() { request() }
+            if self.sessions[.claude]?.running == true { self.sessions[.claude]?.terminal.sendInput(Data("\r".utf8)) }
+            else { self.launch(.claude) }
+        }
+        return list
+    }
+
+    /// Shown before Claude Code is downloaded; the Android app says the same. Claude Code isn't Cinder
+    /// Lite's to hand out: it's Anthropic's, under its own license. So its download is the user's call,
+    /// made by a tap, never automatic.
+    private static let claudeNotice = "Cinder Lite runs Claude Code, but doesn't include it. Claude Code is " +
+        "Anthropic's software, distributed separately under its own license (© Anthropic PBC, all rights " +
+        "reserved). Its use is subject to Anthropic's legal agreements: " +
+        "https://code.claude.com/docs/en/legal-and-compliance\n\nTap Download to get the latest " +
+        "version from npm (about 240 MB) and install it here. By downloading it, you accept Anthropic's terms for it."
+
+    /// Shows `list` over the terminal and keeps looking at it, every second, until it's closed.
+    private func open(_ list: Checklist) {
+        checklist = list
+        checklistView.showDetails = false
+        fullChecklist.isActive = true
+        checklistView.isHidden = false
+        terminalView.resignFirstResponder()
+        checklistTimer?.invalidate()
+        checklistTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+        refresh()
+    }
+
+    private func close() {
+        checklist = nil
+        checklistTimer?.invalidate()
+        checklistTimer = nil
+        checklistView.isHidden = true
+        showKeyboard()
+    }
+
+    private func toggleDetails() {
+        checklistView.showDetails.toggle()
+        fullChecklist.isActive = !checklistView.showDetails
+        refresh()
+        showKeyboard()
+    }
+
+    /// Draws the checklist as it now stands. Setup's closes once it's done (Claude Code starts in the
+    /// Claude tab); a module's stays, with its buttons, until the user leaves it.
+    private func refresh() {
+        guard let list = checklist else { return }
+        let look = list.look()
+        if list.module == nil && look.complete { return close() }
+        checklistView.show(list, look, actions: checklistActions(list, look))
+    }
+
+    /// A module's list's buttons at the foot, as on Android; setup's has none.
+    private func checklistActions(_ list: Checklist, _ look: Checklist.Look) -> [(String, () -> Void)] {
+        guard let module = list.module else { return [] }
+        return [
+            ("Turn off", { [weak self] in self?.setModule(module, on: false) }),
+            ("Restart Claude", { [weak self] in self?.close(); self?.launch(.claude) }),
+            (look.complete ? "Done" : "Later", { [weak self] in self?.close() }),
+        ]
+    }
+
+    /// Setup's checklist is showing: until it's done, the rest of the app waits.
+    private var settingUp: Bool { checklist != nil && checklist?.module == nil }
 
     /// Starts `tab` in a fresh session (ending its old one, if any) and shows it.
     func launch(_ tab: Tab) {
@@ -151,6 +269,7 @@ final class TerminalController: UIViewController {
 
     /// Switches the screen to `tab`, starting its session the first time. The other keeps running.
     func show(_ tab: Tab) {
+        if checklist?.module != nil { close() }   // a module's list: as if Later
         autocorrect?.forget()
         shown = tab
         guard let session = sessions[tab] else { return launch(tab) }
@@ -219,7 +338,7 @@ final class TerminalController: UIViewController {
     /// Simulator testing, where nothing can type or tap. Files written to Library/Cinder/debug/ (in the
     /// app's container, on the Mac): `type` is typed into the terminal that's showing, as the
     /// keyboard would (through autocorrect and Enter-to-restart); `menu` taps the button it names in the
-    /// dialog showing, or else picks the ⋮ item it names.
+    /// dialog showing or the checklist showing, or else picks the ⋮ item it names.
     private var debugWatcher: DirectoryWatcher?
     private func watchDebugInput() {
         let dir = Sandbox.shared.root.deletingLastPathComponent().appendingPathComponent("debug")
@@ -239,6 +358,11 @@ final class TerminalController: UIViewController {
                     typealias Handler = @convention(block) (UIAlertAction) -> Void
                     let run = unsafeBitCast(handler as AnyObject, to: Handler.self)
                     alert.dismiss(animated: false) { run(action) }
+                } else if let list = self.checklist, case let look = list.look(),
+                          let button = (list.steps.indices.flatMap { list.row($0, look).buttons } +
+                                        self.checklistActions(list, look)).first(where: { $0.0 == title }) {
+                    button.1()   // a checklist's button
+                    self.refresh()
                 } else if let item = (self.menuItems() + self.moduleItems()).first(where: { $0.title == title }) {
                     item.run()
                 }
@@ -275,11 +399,12 @@ final class TerminalController: UIViewController {
         ]
     }
 
-    /// ⋮ → Modules: every module, checked while it's on.
+    /// ⋮ → Modules: every module, checked once it's on and its checklist is done. Until then a tap
+    /// opens the checklist again.
     private func moduleItems() -> [MenuItem] {
         Modules.all.map { module in
-            let on = Modules.isOn(module)
-            return (module.title, on, { [weak self] in self?.setModule(module, on: !on) })
+            let ready = Modules.isOn(module) && module.isReady
+            return (module.title, ready, { [weak self] in self?.setModule(module, on: !ready) })
         }
     }
 
@@ -288,41 +413,37 @@ final class TerminalController: UIViewController {
             UIAction(title: item.title, attributes: attributes, state: item.checked == true ? .on : .off) { _ in item.run() }
         }
         let items = menuItems()
+        // While setup's checklist shows, only what can't get in its way: Stop, and starting over.
+        if settingUp { return UIMenu(children: items.filter { $0.title == "Stop" || $0.title == "Reinstall sandbox" }.map { action($0) }) }
         return UIMenu(children: items.dropLast().map { action($0) } + [
             UIMenu(title: "Modules", children: moduleItems().map { action($0) }),
             action(items[items.count - 1], .destructive),   // Reinstall sandbox
         ])
     }
 
-    /// ⋮ → Modules → a module: on at once, off once the user says so (as on Android). Either way
-    /// Claude learns of it when it next starts: its brief is read at launch.
+    /// ⋮ → Modules → a module: on, with its checklist (as on Android); off once the user says so.
+    /// Either way Claude learns of it when it next starts: its brief is read at launch.
     private func setModule(_ module: CinderModule, on: Bool) {
+        guard !settingUp else { return }
         guard !on else {
             Modules.set(module, on: true)
-            return offerRestart(module)
+            return open(Checklist("Turning on \(module.title)", module.steps(), module: module))
         }
         confirm("Turn off \(module.title)?", "Claude stops seeing its commands when it next starts.", "Turn off") { [weak self] off in
-            guard off else { return }
+            guard off, let self else { return }
             Modules.set(module, on: false)
-            self?.offerRestart(module)
-        }
-    }
-
-    private func offerRestart(_ module: CinderModule) {
-        let on = Modules.isOn(module)
-        let message = [on ? module.nextStep() : nil, "Claude finds out when it next starts. Restart Claude now? " +
-                       "That ends this conversation; claude --continue picks it up again."].compactMap { $0 }.joined(separator: "\n\n")
-        confirm("\(module.title) is \(on ? "on" : "off")", message, "Restart Claude", cancel: "Later") { [weak self] restart in
-            if restart { self?.launch(.claude) }
-            if on, let self { module.turnedOn(self) }
+            if self.checklist?.module === module { self.close() }
+            self.confirm("\(module.title) is off", "Claude finds out when it next starts. Restart Claude now? That " +
+                         "ends this conversation; claude --continue picks it up again.", "Restart Claude", cancel: "Later") { [weak self] restart in
+                if restart { self?.launch(.claude) }
+            }
         }
     }
 
     func setKeepAlive(_ on: Bool) {
         let keepAlive = KeepAlive.shared
-        keepAlive.enabled = on
-        guard on else { return }
-        Notifier.shared.requestPermission()
+        guard on else { keepAlive.enabled = false; return }
+        keepAlive.turnOn()
         if keepAlive.denied {
             alert("Location is off", "Cinder Lite stays awake in the background by receiving location updates (the " +
                   "coarsest kind, never stored or sent anywhere). Allow location for Cinder Lite in Settings → " +

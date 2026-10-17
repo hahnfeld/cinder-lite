@@ -84,7 +84,7 @@ class TrafficVpn : VpnService() {
         val ready = File(dir, "ready").apply { delete() }
         // cinder-traffic.py decrypts HTTPS only when the user trusts the certificate (it's passed through otherwise).
         val decrypt = File(dir, "decrypt")
-        if (trusted(TrafficFlow.caCert(sandbox))) decrypt.writeText("") else decrypt.delete()
+        if (trusted(NetworkMonitor.caCert(sandbox))) decrypt.writeText("") else decrypt.delete()
         // Whatever listens there gets every app's traffic: never something else that got there first.
         check(!listening()) { "another app is using port $PORT" }
         // A fresh login each run, so no other app on the phone can use mitmproxy's port as a proxy.
