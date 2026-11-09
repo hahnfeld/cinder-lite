@@ -176,9 +176,10 @@ final class Sandbox {
             // Claude Code runs on Bun, whose JIT only adds work in an emulator: the code it compiles is
             // emulated like any other. In testing, a one-line `claude -p` went from ~15 s to ~10 s.
             "BUN_JSC_useJIT=0",
-            // No telemetry, error reports or update check holding up every start (then ~10 s down to ~5 s);
-            // cinder-claude runs `claude update` once a day instead.
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+            // No telemetry, error reports or update check; cinder-claude runs `claude update` once a day
+            // instead. Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, though it starts faster: it turns off
+            // feature flags, and with them /remote-control. Same as the Android app.
+            "DISABLE_TELEMETRY=1", "DISABLE_ERROR_REPORTING=1", "DISABLE_AUTOUPDATER=1",
         ]
     }
 }

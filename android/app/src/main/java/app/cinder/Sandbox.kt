@@ -326,9 +326,11 @@ class Sandbox(private val ctx: Context) {
             append("export PYTHONUSERBASE=/root/.local; ")
             // Nothing in here can open a browser; xdg-open hands the URL to the app (OAuth login).
             append("export BROWSER=xdg-open; ")
-            // No telemetry, error reports or update check holding up every start; the app runs
-            // `claude update` once a day instead ([updateClaude]). Same as the iOS app.
-            append("export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; ")
+            // No telemetry, error reports or update check; the app runs `claude update` once a day
+            // instead ([updateClaude]). Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, though it
+            // starts ~2 s faster: it turns off feature flags, and with them /remote-control.
+            // Same as the iOS app.
+            append("export DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1; ")
             // The phone's time zone (tzdata has the rules), so clocks in here read local time.
             timeZone()?.let { append("export TZ=$it; ") }
         }

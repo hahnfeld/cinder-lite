@@ -30,9 +30,8 @@ anything Claude Code supports, under Anthropic's terms, just as on a laptop:
 - **Only what Claude Code needs.** First launch installs a short list of tools: bash, coreutils,
   git, ripgrep, curl, Python, Node.js, npm, ssh, make, jq and a few more. Anything else is one
   `apk add`, `pip install` or `npm install -g` away.
-- **Fast to start.** Claude Code's telemetry, error reports and update check are off, so nothing
-  holds up a start. A one-line `claude -p` takes about 2.5 s on a Pixel. Claude Code is updated
-  once a day in the background instead.
+- **Quiet.** Claude Code's telemetry, error reports and update check are off. Claude Code is
+  updated once a day in the background instead.
 - **Nothing extra running.** Cinder Lite has no accounts, analytics or servers of its own. You sign
   in to Claude with your own account.
 
